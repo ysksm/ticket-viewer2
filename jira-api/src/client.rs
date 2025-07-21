@@ -179,6 +179,12 @@ impl JiraClient {
 mod tests {
     use super::*;
 
+    /// JiraConfig::new()が有効なURLとBasic認証で正常に設定を作成できることをテスト
+    /// 
+    /// テスト内容:
+    /// - 有効なHTTPS URLが正しく検証される
+    /// - Basic認証情報が正しく保存される
+    /// - 作成されたConfigオブジェクトの値が期待通りである
     #[test]
     fn test_jira_config_new_with_valid_url() {
         // Given: 有効なURLとBasic認証情報
@@ -204,6 +210,11 @@ mod tests {
         }
     }
 
+    /// JiraConfig::new()がBearer認証で正常に設定を作成できることをテスト
+    /// 
+    /// テスト内容:
+    /// - Bearer認証情報が正しく保存される
+    /// - 作成されたConfigオブジェクトの値が期待通りである
     #[test]
     fn test_jira_config_new_with_bearer_auth() {
         // Given: 有効なURLとBearer認証情報
@@ -227,6 +238,11 @@ mod tests {
         }
     }
 
+    /// JiraConfig::new()が無効なURLでエラーを返すことをテスト
+    /// 
+    /// テスト内容:
+    /// - 無効なURL形式が正しく検出される
+    /// - 適切なエラーメッセージが返される
     #[test]
     fn test_jira_config_new_with_invalid_url() {
         // Given: 無効なURL
@@ -249,6 +265,11 @@ mod tests {
         }
     }
 
+    /// JiraConfig::from_env()が環境変数からBasic認証で設定を作成できることをテスト
+    /// 
+    /// テスト内容:
+    /// - JIRA_URL, JIRA_USER, JIRA_API_TOKENが正しく読み込まれる
+    /// - Basic認証設定が正しく作成される
     #[test]
     fn test_jira_config_from_env_with_basic_auth() {
         // Given: 環境変数を設定
@@ -281,6 +302,11 @@ mod tests {
         }
     }
 
+    /// JiraConfig::from_env()がJIRA_URL環境変数が未設定時にエラーを返すことをテスト
+    /// 
+    /// テスト内容:
+    /// - JIRA_URLが未設定の場合にConfigurationMissingエラーが返される
+    /// - 適切なエラーメッセージが含まれる
     #[test]
     fn test_jira_config_from_env_missing_url() {
         // Given: JIRA_URLが設定されていない
@@ -309,6 +335,11 @@ mod tests {
         }
     }
 
+    /// JiraConfig::from_env()がJIRA_API_TOKEN環境変数が未設定時にエラーを返すことをテスト
+    /// 
+    /// テスト内容:
+    /// - JIRA_API_TOKENが未設定の場合にConfigurationMissingエラーが返される
+    /// - 適切なエラーメッセージが含まれる
     #[test]
     fn test_jira_config_from_env_missing_auth() {
         // Given: 認証情報が不完全（まず全部クリアしてから設定）
@@ -341,6 +372,12 @@ mod tests {
         }
     }
 
+    /// JiraClient::new()が有効な設定でHTTPクライアントを作成できることをテスト
+    /// 
+    /// テスト内容:
+    /// - 有効な設定でJiraClientが正常に作成される
+    /// - 設定値が正しくconfig()メソッドで取得できる
+    /// - 認証ヘッダーが正しく設定される
     #[test]
     fn test_jira_client_new() {
         // Given: 有効な設定
@@ -361,6 +398,11 @@ mod tests {
         assert_eq!(client.config().base_url, "https://example.atlassian.net");
     }
 
+    /// JiraClient::new()がBearer認証で正常にクライアントを作成できることをテスト
+    /// 
+    /// テスト内容:
+    /// - Bearer認証設定でJiraClientが正常に作成される
+    /// - Bearerトークンが正しくAuthorizationヘッダーに設定される
     #[test]
     fn test_jira_client_with_bearer_auth() {
         // Given: Bearer認証の設定
@@ -378,6 +420,12 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// JiraClientのget()メソッドが正常にHTTP GETリクエストを実行できることをテスト
+    /// 
+    /// テスト内容:
+    /// - 正しいURLにGETリクエストが送信される
+    /// - Basic認証ヘッダーが正しく設定される
+    /// - 成功レスポンスがJSONとして正しくデシリアライズされる
     #[tokio::test]
     async fn test_get_request_success() {
         use wiremock::{MockServer, Mock, ResponseTemplate};
@@ -421,6 +469,12 @@ mod tests {
         assert_eq!(data["name"], "Test Project");
     }
 
+    /// JiraClientのget()メソッドがHTTPエラーレスポンスを正しく処理できることをテスト
+    /// 
+    /// テスト内容:
+    /// - 404 Not Foundレスポンスが正しくApiErrorに変換される
+    /// - エラーメッセージが正しく抽出される
+    /// - ステータスコードが正しく保持される
     #[tokio::test]
     async fn test_get_request_error() {
         use wiremock::{MockServer, Mock, ResponseTemplate};
@@ -460,6 +514,12 @@ mod tests {
         }
     }
 
+    /// search_issues()が正しいJQLとパラメータで検索結果を取得できることをテスト
+    /// 
+    /// テスト内容:
+    /// - POST /rest/api/3/searchエンドポイントに正しいリクエストが送信される
+    /// - JQLクエリとstartAt/maxResultsパラメータが正しく送信される
+    /// - レスポンスがSearchResult構造体に正しくデシリアライズされる
     #[tokio::test]
     async fn test_search_issues_success() {
         use wiremock::{MockServer, Mock, ResponseTemplate};
@@ -546,6 +606,12 @@ mod tests {
         assert_eq!(search_result.issues[0].key, "TEST-1");
     }
 
+    /// search_issues()が複雑なパラメータ（fields, expand, validateQuery）で正しく動作することをテスト
+    /// 
+    /// テスト内容:
+    /// - fieldsパラメータが正しくリクエストボディに設定される
+    /// - expandパラメータが正しくリクエストボディに設定される
+    /// - validateQueryフラグが正しくリクエストボディに設定される
     #[tokio::test]
     async fn test_search_issues_with_params() {
         use wiremock::{MockServer, Mock, ResponseTemplate};
@@ -598,6 +664,12 @@ mod tests {
         assert_eq!(search_result.issues.len(), 0);
     }
 
+    /// get_projects()が正常にプロジェクト一覧を取得できることをテスト
+    /// 
+    /// テスト内容:
+    /// - GET /rest/api/3/projectエンドポイントに正しいリクエストが送信される
+    /// - レスポンスがVec<Project>に正しくデシリアライズされる
+    /// - 各プロジェクトの基本プロパティ（key, name）が正しく設定される
     #[tokio::test]
     async fn test_get_projects_success() {
         use wiremock::{MockServer, Mock, ResponseTemplate};
@@ -657,6 +729,12 @@ mod tests {
         assert_eq!(projects[1].name, "Demo Project");
     }
 
+    /// get_projects()が権限エラーを正しく処理できることをテスト
+    /// 
+    /// テスト内容:
+    /// - 403 Forbiddenレスポンスが正しくApiErrorに変換される
+    /// - エラーメッセージが正しく抽出される
+    /// - ステータスコードが正しく保持される
     #[tokio::test]
     async fn test_get_projects_error() {
         use wiremock::{MockServer, Mock, ResponseTemplate};
