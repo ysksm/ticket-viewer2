@@ -19,17 +19,17 @@ use jira_api::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     
-    println!("🚀 JIRA API クライアント基本使用例");
+    println!("JIRA API クライアント基本使用例");
     println!("==================================");
 
     // 環境変数から設定を取得、またはfrom_env()を使用
     let config = match JiraConfig::from_env() {
         Ok(config) => {
-            println!("✅ 環境変数から設定を読み込みました");
+            println!("[OK] 環境変数から設定を読み込みました");
             config
         }
         Err(_) => {
-            println!("⚠️  環境変数が設定されていません。デフォルト値を使用します。");
+            println!("[WARNING] 環境変数が設定されていません。デフォルト値を使用します。");
             println!("   実際のAPIを呼び出すには環境変数を設定してください。");
             
             let base_url = env::var("JIRA_URL")
@@ -49,17 +49,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    println!("📡 JIRA URL: {}", config.base_url);
+    println!("[INFO] JIRA URL: {}", config.base_url);
 
     // JIRAクライアントを作成
     let client = JiraClient::new(config)?;
-    println!("✅ JIRAクライアントを作成しました");
+    println!("[OK] JIRAクライアントを作成しました");
 
     // プロジェクト一覧を取得
-    println!("\n📂 プロジェクト一覧を取得中...");
+    println!("\n[INFO] プロジェクト一覧を取得中...");
     match client.get_projects().await {
         Ok(projects) => {
-            println!("✅ {} 個のプロジェクトが見つかりました:", projects.len());
+            println!("[OK] {} 個のプロジェクトが見つかりました:", projects.len());
             for (i, project) in projects.iter().take(5).enumerate() {
                 println!("   {}. {} - {} ({})", 
                     i + 1, 
@@ -73,22 +73,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Err(e) => {
-            println!("❌ プロジェクト取得エラー: {}", e);
+            println!("[ERROR] プロジェクト取得エラー: {}", e);
             println!("   環境変数が正しく設定されているか確認してください。");
         }
     }
 
     // 詳細情報付きプロジェクト取得の例
-    println!("\n📂 詳細情報付きプロジェクト取得中...");
+    println!("\n[INFO] 詳細情報付きプロジェクト取得中...");
     let project_params = ProjectParams::new()
         .expand(vec!["lead".to_string(), "description".to_string()])
         .recent(3);
     
     match client.get_projects_with_params(project_params).await {
         Ok(projects) => {
-            println!("✅ {} 個のプロジェクト（詳細情報付き）:", projects.len());
+            println!("[OK] {} 個のプロジェクト（詳細情報付き）:", projects.len());
             for project in projects.iter().take(3) {
-                println!("   📋 {} - {}", project.key, project.name);
+                println!("   {} - {}", project.key, project.name);
                 if let Some(desc) = &project.description {
                     println!("      説明: {}", desc);
                 }
@@ -98,12 +98,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Err(e) => {
-            println!("❌ 詳細プロジェクト取得エラー: {}", e);
+            println!("[ERROR] 詳細プロジェクト取得エラー: {}", e);
         }
     }
 
     // チケット検索の例
-    println!("\n🔍 最近のチケットを検索中...");
+    println!("\n[INFO] 最近のチケットを検索中...");
     let search_params = SearchParams::new()
         .max_results(5)
         .fields(vec![
@@ -120,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     match client.search_issues("order by created DESC", search_params).await {
         Ok(search_result) => {
-            println!("✅ 検索結果: {} 件中 {} 件を表示", 
+            println!("[OK] 検索結果: {} 件中 {} 件を表示", 
                 search_result.total, 
                 search_result.issues.len()
             );
@@ -131,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|a| a.display_name.as_str())
                     .unwrap_or("未割当");
                     
-                println!("   🎫 {} - {} [{}] (担当: {})", 
+                println!("   {} - {} [{}] (担当: {})", 
                     issue.key,
                     issue.fields.summary,
                     issue.fields.status.name,
@@ -140,13 +140,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Err(e) => {
-            println!("❌ チケット検索エラー: {}", e);
+            println!("[ERROR] チケット検索エラー: {}", e);
             println!("   詳細: {:?}", e);
         }
     }
 
     // プロジェクト固有検索の例（最初のプロジェクトが見つかった場合）
-    println!("\n🔍 プロジェクト固有検索の例...");
+    println!("\n[INFO] プロジェクト固有検索の例...");
     match client.get_projects().await {
         Ok(projects) if !projects.is_empty() => {
             let first_project = &projects[0];
@@ -165,29 +165,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             match client.search_issues(&jql, params).await {
                 Ok(result) => {
-                    println!("✅ プロジェクト {} の最新チケット {} 件:", 
+                    println!("[OK] プロジェクト {} の最新チケット {} 件:", 
                         first_project.key, 
                         result.issues.len()
                     );
                     for issue in &result.issues {
-                        println!("   🎫 {} - {}", 
+                        println!("   {} - {}", 
                             issue.key, 
                             issue.fields.summary
                         );
                     }
                 }
                 Err(e) => {
-                    println!("❌ プロジェクト検索エラー: {}", e);
+                    println!("[ERROR] プロジェクト検索エラー: {}", e);
                 }
             }
         }
         _ => {
-            println!("⚠️  プロジェクト固有検索をスキップ（プロジェクトが見つからない）");
+            println!("[WARNING] プロジェクト固有検索をスキップ（プロジェクトが見つからない）");
         }
     }
 
-    println!("\n✨ 基本使用例完了!");
-    println!("\n💡 他のサンプル:");
+    println!("\n基本使用例完了!");
+    println!("\n他のサンプル:");
     println!("   cargo run --example search_example");
     println!("   cargo run --example project_example");
     
