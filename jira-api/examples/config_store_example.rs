@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("1. 設定ストアの初期化");
     let mut config_store = FileConfigStore::default_config_dir()?;
     config_store.initialize().await?;
-    println!("✅ 設定ストアを初期化しました");
+    println!("設定ストアを初期化しました");
 
     // 2. JIRA設定の保存と読み込み
     println!("\n2. JIRA設定の管理");
@@ -28,12 +28,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     // 設定を保存
     config_store.save_jira_config(&jira_config).await?;
-    println!("✅ JIRA設定を保存しました");
+    println!("JIRA設定を保存しました");
     
     // 設定を読み込み
     let loaded_config = config_store.load_jira_config().await?;
     if let Some(config) = loaded_config {
-        println!("📖 読み込んだJIRA設定:");
+        println!("読み込んだJIRA設定:");
         println!("   - Base URL: {}", config.base_url);
         match config.auth {
             Auth::Basic { username, .. } => {
@@ -58,12 +58,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // フィルター設定を保存
     for filter in &filters {
         config_store.save_filter_config(filter).await?;
-        println!("✅ フィルター '{}' を保存しました", filter.name);
+        println!("フィルター '{}' を保存しました", filter.name);
     }
     
     // フィルター設定一覧を取得
     let saved_filters = config_store.list_filter_configs().await?;
-    println!("\n📋 保存済みフィルター一覧:");
+    println!("\n保存済みフィルター一覧:");
     for filter in &saved_filters {
         println!("   - {}: {} (使用回数: {}回)", 
             filter.id, filter.name, filter.usage_count);
@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 特定のフィルターを読み込み
     let bug_filter = config_store.load_filter_config("bug_filter").await?;
     if let Some(filter) = bug_filter {
-        println!("\n🔍 バグフィルターの詳細:");
+        println!("\nバグフィルターの詳細:");
         println!("   - プロジェクト: {:?}", filter.filter.project_keys);
         println!("   - ステータス: {:?}", filter.filter.statuses);
         println!("   - 課題タイプ: {:?}", filter.filter.issue_types);
@@ -93,12 +93,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     // アプリケーション設定を保存
     config_store.save_app_config(&app_config).await?;
-    println!("✅ アプリケーション設定を保存しました");
+    println!("アプリケーション設定を保存しました");
     
     // アプリケーション設定を読み込み
     let loaded_app_config = config_store.load_app_config().await?;
     if let Some(config) = loaded_app_config {
-        println!("📖 アプリケーション設定:");
+        println!("アプリケーション設定:");
         println!("   - アプリ名: {}", config.app_name);
         println!("   - バージョン: {}", config.version);
         println!("   - デバッグモード: {}", config.debug_mode);
@@ -115,13 +115,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     // フィルターを「使用」して使用回数を増加
     if let Some(mut filter) = config_store.load_filter_config("my_issues").await? {
-        println!("📊 '{}' の使用前: {}回", filter.name, filter.usage_count);
+        println!("'{}' の使用前: {}回", filter.name, filter.usage_count);
         
         // 使用回数を増加
         filter.increment_usage();
         config_store.save_filter_config(&filter).await?;
         
-        println!("📊 '{}' の使用後: {}回", filter.name, filter.usage_count);
+        println!("'{}' の使用後: {}回", filter.name, filter.usage_count);
     }
 
     // 6. フィルターの削除
@@ -129,12 +129,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     let deleted = config_store.delete_filter_config("recent_issues").await?;
     if deleted {
-        println!("🗑️ 'recent_issues' フィルターを削除しました");
+        println!("'recent_issues' フィルターを削除しました");
     }
     
     // 削除後のフィルター一覧を確認
     let remaining_filters = config_store.list_filter_configs().await?;
-    println!("📋 残りのフィルター: {}個", remaining_filters.len());
+    println!("残りのフィルター: {}個", remaining_filters.len());
     for filter in &remaining_filters {
         println!("   - {}", filter.name);
     }
@@ -147,11 +147,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config.set_custom_setting("max_results".to_string(), "200".to_string());
         config.set_debug_mode(false);
         config_store.save_app_config(&config).await?;
-        println!("✅ アプリケーション設定を更新しました");
+        println!("アプリケーション設定を更新しました");
     }
 
     println!("\n=== 設定ストア使用例完了 ===");
-    println!("💡 ヒント: 設定ファイルは以下の場所に保存されています");
+    println!("ヒント: 設定ファイルは以下の場所に保存されています");
     println!("   - Linux: ~/.config/jira-api/");
     println!("   - macOS: ~/Library/Application Support/jira-api/");
     println!("   - Windows: %APPDATA%\\jira-api\\");
