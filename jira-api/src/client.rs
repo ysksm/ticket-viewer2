@@ -196,6 +196,74 @@ impl JiraClient {
 
         self.get(&url).await
     }
+
+    /// JIRAの優先度一覧を取得する
+    /// 
+    /// # Returns
+    /// 
+    /// `Result<Vec<Priority>>` - 優先度のベクター、またはエラー
+    /// 
+    /// # Examples
+    /// 
+    /// ```no_run
+    /// use jira_api::{JiraClient, JiraConfig, Auth};
+    /// 
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let config = JiraConfig::new(
+    ///     "https://your-domain.atlassian.net".to_string(),
+    ///     Auth::Basic {
+    ///         username: "user@example.com".to_string(),
+    ///         api_token: "api-token".to_string(),
+    ///     }
+    /// )?;
+    /// let client = JiraClient::new(config)?;
+    /// let priorities = client.get_priorities().await?;
+    /// for priority in priorities {
+    ///     println!("{}: {}", priority.name, priority.description.unwrap_or_default());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_priorities(&self) -> Result<Vec<crate::models::Priority>> {
+        self.get("/rest/api/3/priority").await
+    }
+
+    /// JIRAの課題タイプ一覧を取得する
+    /// 
+    /// # Returns
+    /// 
+    /// `Result<Vec<IssueType>>` - 課題タイプのベクター、またはエラー
+    /// 
+    /// # Examples
+    /// 
+    /// ```no_run
+    /// use jira_api::{JiraClient, JiraConfig, Auth};
+    /// 
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let config = JiraConfig::new(
+    ///     "https://your-domain.atlassian.net".to_string(),
+    ///     Auth::Basic {
+    ///         username: "user@example.com".to_string(),
+    ///         api_token: "api-token".to_string(),
+    ///     }
+    /// )?;
+    /// let client = JiraClient::new(config)?;
+    /// let issue_types = client.get_issue_types().await?;
+    /// for issue_type in issue_types {
+    ///     println!("{}: {} (subtask: {})", 
+    ///         issue_type.name, 
+    ///         issue_type.description.unwrap_or_default(),
+    ///         issue_type.subtask
+    ///     );
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_issue_types(&self) -> Result<Vec<crate::models::IssueType>> {
+        self.get("/rest/api/3/issuetype").await
+    }
 }
 
 #[cfg(test)]
@@ -946,5 +1014,218 @@ mod tests {
 
         // Then: 成功する
         assert!(result.is_ok());
+    }
+
+    /// get_priorities()が正常に優先度一覧を取得できることをテスト
+    /// 
+    /// テスト内容:
+    /// - /rest/api/3/priorityエンドポイントに正しくGETリクエストが送信される
+    /// - レスポンスが正しくPriority構造体にデシリアライズされる
+    /// - 複数の優先度が含まれる場合の動作確認
+    #[tokio::test]
+    async fn test_get_priorities() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+        use serde_json::json;
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/priority"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(json!([
+                    {
+                        "id": "1",
+                        "name": "Highest",
+                        "self": "https://example.atlassian.net/rest/api/3/priority/1",
+                        "description": "This problem will block progress.",
+                        "iconUrl": "https://example.atlassian.net/images/icons/priorities/highest.svg",
+                        "statusColor": "#cd1316"
+                    },
+                    {
+                        "id": "2", 
+                        "name": "High",
+                        "self": "https://example.atlassian.net/rest/api/3/priority/2",
+                        "description": "Serious problem that could block progress.",
+                        "iconUrl": "https://example.atlassian.net/images/icons/priorities/high.svg",
+                        "statusColor": "#d04437"
+                    },
+                    {
+                        "id": "3",
+                        "name": "Medium",
+                        "self": "https://example.atlassian.net/rest/api/3/priority/3",
+                        "description": "Has the potential to affect progress.",
+                        "iconUrl": "https://example.atlassian.net/images/icons/priorities/medium.svg",
+                        "statusColor": "#f79232"
+                    }
+                ])))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test".to_string(),
+                api_token: "token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let result = client.get_priorities().await;
+
+        assert!(result.is_ok());
+        let priorities = result.unwrap();
+        assert_eq!(priorities.len(), 3);
+        
+        assert_eq!(priorities[0].id, "1");
+        assert_eq!(priorities[0].name, "Highest");
+        assert_eq!(priorities[0].description, Some("This problem will block progress.".to_string()));
+        
+        assert_eq!(priorities[1].id, "2");
+        assert_eq!(priorities[1].name, "High");
+        
+        assert_eq!(priorities[2].id, "3");
+        assert_eq!(priorities[2].name, "Medium");
+    }
+
+    /// get_priorities()がHTTPエラーを適切に処理することをテスト
+    /// 
+    /// テスト内容:
+    /// - 404エラー時にNotFoundエラーが返される
+    /// - 認証エラー（401）時にAuthenticationErrorが返される
+    #[tokio::test]
+    async fn test_get_priorities_error_handling() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/priority"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test".to_string(),
+                api_token: "token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let result = client.get_priorities().await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(matches!(error, crate::Error::ApiError { status: 404, .. }));
+    }
+
+    /// get_issue_types()が正常に課題タイプ一覧を取得できることをテスト
+    /// 
+    /// テスト内容:
+    /// - /rest/api/3/issuetypeエンドポイントに正しくGETリクエストが送信される
+    /// - レスポンスが正しくIssueType構造体にデシリアライズされる
+    /// - 複数の課題タイプが含まれる場合の動作確認
+    #[tokio::test]
+    async fn test_get_issue_types() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+        use serde_json::json;
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issuetype"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(json!([
+                    {
+                        "id": "10000",
+                        "name": "Task",
+                        "self": "https://example.atlassian.net/rest/api/3/issuetype/10000",
+                        "description": "A task represents work that needs to be done.",
+                        "iconUrl": "https://example.atlassian.net/images/icons/issuetypes/task.png",
+                        "subtask": false
+                    },
+                    {
+                        "id": "10001",
+                        "name": "Bug",
+                        "self": "https://example.atlassian.net/rest/api/3/issuetype/10001", 
+                        "description": "A bug is a problem in the system.",
+                        "iconUrl": "https://example.atlassian.net/images/icons/issuetypes/bug.png",
+                        "subtask": false
+                    },
+                    {
+                        "id": "10002",
+                        "name": "Subtask",
+                        "self": "https://example.atlassian.net/rest/api/3/issuetype/10002",
+                        "description": "A subtask for a parent issue.",
+                        "iconUrl": "https://example.atlassian.net/images/icons/issuetypes/subtask.png",
+                        "subtask": true
+                    }
+                ])))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test".to_string(),
+                api_token: "token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let result = client.get_issue_types().await;
+
+        assert!(result.is_ok());
+        let issue_types = result.unwrap();
+        assert_eq!(issue_types.len(), 3);
+        
+        assert_eq!(issue_types[0].id, "10000");
+        assert_eq!(issue_types[0].name, "Task");
+        assert_eq!(issue_types[0].subtask, Some(false));
+        
+        assert_eq!(issue_types[1].id, "10001");
+        assert_eq!(issue_types[1].name, "Bug");
+        assert_eq!(issue_types[1].subtask, Some(false));
+        
+        assert_eq!(issue_types[2].id, "10002");
+        assert_eq!(issue_types[2].name, "Subtask");
+        assert_eq!(issue_types[2].subtask, Some(true));
+    }
+
+    /// get_issue_types()がHTTPエラーを適切に処理することをテスト
+    /// 
+    /// テスト内容:
+    /// - 404エラー時にNotFoundエラーが返される
+    #[tokio::test]
+    async fn test_get_issue_types_error_handling() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issuetype"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test".to_string(),
+                api_token: "token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let result = client.get_issue_types().await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(matches!(error, crate::Error::ApiError { status: 404, .. }));
     }
 }
