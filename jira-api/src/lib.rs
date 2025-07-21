@@ -1,4 +1,5 @@
 pub mod client;
+pub mod config_store;
 pub mod duckdb_store;
 pub mod error;
 pub mod json_store;
@@ -33,3 +34,6 @@ pub use json_store::JsonStore;
 
 // DuckDB store re-export
 pub use duckdb_store::DuckDBStore;
+
+// Config store re-exports
+pub use config_store::{ConfigStore, FileConfigStore, AppConfig};

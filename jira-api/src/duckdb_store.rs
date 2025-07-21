@@ -11,6 +11,7 @@ use crate::{Issue, Error, PersistenceStore, IssueFilter, FilterConfig, StorageSt
 /// DuckDB形式のデータストア
 pub struct DuckDBStore {
     /// データベースファイルのパス
+    #[allow(dead_code)]
     db_path: PathBuf,
     /// DuckDB接続（スレッドセーフ）
     connection: Arc<Mutex<Connection>>,

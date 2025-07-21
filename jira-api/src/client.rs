@@ -4,13 +4,13 @@ use std::sync::Arc;
 use reqwest::{Client, header};
 use base64::Engine;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Auth {
     Basic { username: String, api_token: String },
     Bearer { token: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct JiraConfig {
     pub base_url: String,
     pub auth: Auth,
