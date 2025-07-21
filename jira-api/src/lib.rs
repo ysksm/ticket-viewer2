@@ -1,4 +1,5 @@
 pub mod client;
+pub mod duckdb_store;
 pub mod error;
 pub mod json_store;
 pub mod models;
@@ -29,3 +30,6 @@ pub use persistence::{
 
 // JSON store re-export
 pub use json_store::JsonStore;
+
+// DuckDB store re-export
+pub use duckdb_store::DuckDBStore;
