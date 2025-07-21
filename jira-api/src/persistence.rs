@@ -33,6 +33,18 @@ pub trait PersistenceStore: Send + Sync {
     
     /// フィルター設定を読み込み
     async fn load_filter_config(&self) -> Result<Option<FilterConfig>, Error>;
+    
+    /// 履歴データを保存
+    async fn save_issue_history(&mut self, history: &[crate::IssueHistory]) -> Result<usize, Error>;
+    
+    /// 履歴データを取得
+    async fn load_issue_history(&self, filter: &crate::HistoryFilter) -> Result<Vec<crate::IssueHistory>, Error>;
+    
+    /// 履歴統計情報を取得
+    async fn get_history_stats(&self) -> Result<crate::HistoryStats, Error>;
+    
+    /// 指定課題キーの履歴を削除
+    async fn delete_issue_history(&mut self, issue_keys: &[String]) -> Result<usize, Error>;
 }
 
 /// Issue検索フィルター
@@ -264,7 +276,12 @@ impl IssueFilter {
         // 説明検索
         if let Some(ref text) = self.description_contains {
             if let Some(ref description) = issue.fields.description {
-                if !description.to_lowercase().contains(&text.to_lowercase()) {
+                let description_text = match description {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Object(_) => description.to_string(), // ADF形式の場合は文字列化
+                    _ => description.to_string(),
+                };
+                if !description_text.to_lowercase().contains(&text.to_lowercase()) {
                     return false;
                 }
             } else {
@@ -295,6 +312,16 @@ impl DateRange {
     /// 新しい日時範囲を作成
     pub fn new(start: DateTime<Utc>, end: DateTime<Utc>) -> Self {
         Self { start, end }
+    }
+    
+    /// 日時範囲の妥当性を検証
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        if self.start > self.end {
+            return Err(crate::Error::InvalidFilter(
+                "Start date must be before end date".to_string()
+            ));
+        }
+        Ok(())
     }
     
     /// 指定した日時が範囲に含まれるかチェック
@@ -636,6 +663,9 @@ mod tests {
         );
         
         let initial_updated_at = config.updated_at;
+        
+        // 時刻の更新を確実にするため少し待機
+        std::thread::sleep(std::time::Duration::from_millis(10));
         
         let new_filter = IssueFilter::new()
             .project_keys(vec!["DEMO".to_string()])

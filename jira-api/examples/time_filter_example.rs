@@ -13,6 +13,7 @@
 use dotenv::dotenv;
 use jira_api::{JiraClient, JiraConfig, TimeBasedFilter, SearchParams};
 use chrono::{Utc, Duration};
+use std::env;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -185,11 +186,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter_by_updated(false); // 作成時刻のみでフィルタ
         
     if let Some(time_condition) = recent_filter.to_jql_time_condition() {
-        // プロジェクトを指定したJQLクエリ
-        let jql_query = format!("project = TEST AND ({})", time_condition);
+        // プロジェクトキーを環境変数から取得（フォールバック: TEST）
+        let project_key = env::var("JIRA_PROJECT_KEY").unwrap_or_else(|_| "TEST".to_string());
+        let jql_query = format!("project = {} AND ({})", project_key, time_condition);
         println!("    検索JQL: {}", jql_query);
+        println!("    検索対象プロジェクト: {}", project_key);
         
-        // 実際に検索を実行（TESTプロジェクトが存在する場合のみ）
+        // 実際に検索を実行（指定されたプロジェクトが存在する場合のみ）
         let search_params = SearchParams::new()
             .max_results(5)
             .fields(vec![

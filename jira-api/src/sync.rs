@@ -618,6 +618,9 @@ mod tests {
         let mut result = SyncResult::new();
         let start_time = result.start_time;
         
+        // 時刻の更新を確実にするため少し待機
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        
         // エラーなしで完了
         result.finish();
         assert!(result.end_time > start_time);

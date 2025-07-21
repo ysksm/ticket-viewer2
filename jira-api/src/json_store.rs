@@ -48,6 +48,8 @@ impl JsonStore {
             .map_err(|e| Error::IoError(e))?;
         create_dir_all(self.data_dir.join("filters")).await
             .map_err(|e| Error::IoError(e))?;
+        create_dir_all(self.data_dir.join("history")).await
+            .map_err(|e| Error::IoError(e))?;
         create_dir_all(self.data_dir.join("metadata")).await
             .map_err(|e| Error::IoError(e))?;
         
@@ -72,6 +74,84 @@ impl JsonStore {
             "filter_config.json"
         };
         self.data_dir.join("filters").join(filename)
+    }
+    
+    /// 履歴ファイルのパスを取得
+    fn get_history_file_path(&self) -> PathBuf {
+        let filename = if self.use_compression {
+            "history.json.gz"
+        } else {
+            "history.json"
+        };
+        self.data_dir.join("history").join(filename)
+    }
+    
+    /// 履歴データにフィルターを適用
+    fn apply_history_filter(&self, histories: &[crate::IssueHistory], filter: &crate::HistoryFilter) -> Vec<crate::IssueHistory> {
+        let mut filtered: Vec<crate::IssueHistory> = histories
+            .iter()
+            .filter(|h| {
+                // 課題キーフィルター
+                if let Some(ref issue_keys) = filter.issue_keys {
+                    if !issue_keys.is_empty() && !issue_keys.contains(&h.issue_key) {
+                        return false;
+                    }
+                }
+                
+                // フィールド名フィルター
+                if let Some(ref field_names) = filter.field_names {
+                    if !field_names.is_empty() && !field_names.contains(&h.field_name) {
+                        return false;
+                    }
+                }
+                
+                // 変更者フィルター
+                if let Some(ref authors) = filter.authors {
+                    if !authors.is_empty() {
+                        if let Some(ref author) = h.author {
+                            if !authors.contains(&author.account_id) {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+                    }
+                }
+                
+                // 日付範囲フィルター
+                if let Some(ref date_range) = filter.date_range {
+                    if !date_range.contains(&h.change_timestamp) {
+                        return false;
+                    }
+                }
+                
+                true
+            })
+            .cloned()
+            .collect();
+            
+        // ソート適用
+        match filter.sort_order {
+            crate::HistorySortOrder::TimestampAsc => {
+                filtered.sort_by(|a, b| a.change_timestamp.cmp(&b.change_timestamp));
+            }
+            crate::HistorySortOrder::TimestampDesc => {
+                filtered.sort_by(|a, b| b.change_timestamp.cmp(&a.change_timestamp));
+            }
+            crate::HistorySortOrder::IssueKey => {
+                filtered.sort_by(|a, b| a.issue_key.cmp(&b.issue_key));
+            }
+            crate::HistorySortOrder::FieldName => {
+                filtered.sort_by(|a, b| a.field_name.cmp(&b.field_name));
+            }
+        }
+        
+        // 件数制限適用
+        if let Some(limit) = filter.limit {
+            filtered.truncate(limit);
+        }
+        
+        filtered
     }
     
     /// メタデータファイルのパスを取得
@@ -327,12 +407,66 @@ impl PersistenceStore for JsonStore {
         let config: FilterConfig = self.read_json_file(&config_path).await?;
         Ok(Some(config))
     }
+    
+    async fn save_issue_history(&mut self, history: &[crate::IssueHistory]) -> Result<usize, Error> {
+        self.initialize().await?;
+        
+        let history_path = self.get_history_file_path();
+        self.write_json_file(&history_path, history).await?;
+        Ok(history.len())
+    }
+    
+    async fn load_issue_history(&self, filter: &crate::HistoryFilter) -> Result<Vec<crate::IssueHistory>, Error> {
+        let history_path = self.get_history_file_path();
+        
+        if !history_path.exists() {
+            return Ok(Vec::new());
+        }
+        
+        let all_history: Vec<crate::IssueHistory> = self.read_json_file(&history_path).await?;
+        let filtered = self.apply_history_filter(&all_history, filter);
+        Ok(filtered)
+    }
+    
+    async fn get_history_stats(&self) -> Result<crate::HistoryStats, Error> {
+        let history_path = self.get_history_file_path();
+        
+        if !history_path.exists() {
+            return Ok(crate::HistoryStats::new());
+        }
+        
+        let all_history: Vec<crate::IssueHistory> = self.read_json_file(&history_path).await?;
+        let mut stats = crate::HistoryStats::new();
+        stats.update(&all_history);
+        Ok(stats)
+    }
+    
+    async fn delete_issue_history(&mut self, issue_keys: &[String]) -> Result<usize, Error> {
+        let history_path = self.get_history_file_path();
+        
+        if !history_path.exists() {
+            return Ok(0);
+        }
+        
+        let all_history: Vec<crate::IssueHistory> = self.read_json_file(&history_path).await?;
+        let original_len = all_history.len();
+        
+        let filtered_history: Vec<crate::IssueHistory> = all_history
+            .into_iter()
+            .filter(|h| !issue_keys.contains(&h.issue_key))
+            .collect();
+        
+        let deleted_count = original_len - filtered_history.len();
+        self.write_json_file(&history_path, &filtered_history).await?;
+        Ok(deleted_count)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{IssueFields, Status, IssueType, StatusCategory, Priority, Project, User};
+    use crate::HistoryFilter;
     use std::collections::HashMap;
     use tempfile::TempDir;
     
@@ -389,7 +523,7 @@ mod tests {
         
         let fields = IssueFields {
             summary: format!("Test issue {}", key),
-            description: Some("Test description".to_string()),
+            description: Some(serde_json::Value::String("Test description".to_string())),
             status: issue_status,
             priority: Some(Priority {
                 id: "1".to_string(),
@@ -609,5 +743,154 @@ mod tests {
         assert_eq!(loaded_config.description, Some("Test description".to_string()));
         assert_eq!(loaded_config.filter.project_keys, vec!["TEST"]);
         assert_eq!(loaded_config.filter.statuses, vec!["Open"]);
+    }
+    
+    #[tokio::test]
+    async fn test_json_store_save_and_load_history() {
+        // JsonStoreで履歴データの保存と読み込みが正しく動作することをテスト
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = JsonStore::new(temp_dir.path()).with_compression(false);
+        
+        use crate::{IssueHistory, HistoryAuthor, HistoryFilter};
+        use chrono::Utc;
+        
+        let author = HistoryAuthor {
+            account_id: "user123".to_string(),
+            display_name: "Test User".to_string(),
+            email_address: Some("test@example.com".to_string()),
+        };
+        
+        let histories = vec![
+            IssueHistory::new(
+                "10000".to_string(),
+                "TEST-123".to_string(),
+                "change_1".to_string(),
+                Utc::now(),
+                "status".to_string(),
+            ).with_author(author.clone())
+             .with_field_change(
+                 Some("Open".to_string()),
+                 Some("In Progress".to_string()),
+                 Some("Open".to_string()),
+                 Some("In Progress".to_string()),
+             ),
+            IssueHistory::new(
+                "10001".to_string(),
+                "TEST-124".to_string(),
+                "change_2".to_string(),
+                Utc::now(),
+                "assignee".to_string(),
+            ).with_author(author)
+             .with_field_change(
+                 None,
+                 Some("user456".to_string()),
+                 None,
+                 Some("Jane Doe".to_string()),
+             ),
+        ];
+        
+        // 保存
+        let saved_count = store.save_issue_history(&histories).await.unwrap();
+        assert_eq!(saved_count, 2);
+        
+        // 全件読み込み
+        let filter = HistoryFilter::new();
+        let loaded_histories = store.load_issue_history(&filter).await.unwrap();
+        assert_eq!(loaded_histories.len(), 2);
+        
+        // 特定課題の履歴のみ読み込み
+        let filter = HistoryFilter::new()
+            .issue_keys(vec!["TEST-123".to_string()]);
+        let filtered_histories = store.load_issue_history(&filter).await.unwrap();
+        assert_eq!(filtered_histories.len(), 1);
+        assert_eq!(filtered_histories[0].issue_key, "TEST-123");
+        
+        // ステータス変更のみ読み込み
+        let filter = HistoryFilter::new()
+            .field_names(vec!["status".to_string()]);
+        let status_histories = store.load_issue_history(&filter).await.unwrap();
+        assert_eq!(status_histories.len(), 1);
+        assert_eq!(status_histories[0].field_name, "status");
+    }
+    
+    #[tokio::test]
+    async fn test_json_store_history_stats() {
+        // JsonStoreで履歴統計が正しく動作することをテスト
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = JsonStore::new(temp_dir.path());
+        
+        use crate::IssueHistory;
+        use chrono::Utc;
+        
+        let histories = vec![
+            IssueHistory::new(
+                "10000".to_string(),
+                "TEST-123".to_string(),
+                "change_1".to_string(),
+                Utc::now(),
+                "status".to_string(),
+            ),
+            IssueHistory::new(
+                "10001".to_string(),
+                "TEST-124".to_string(),
+                "change_2".to_string(),
+                Utc::now(),
+                "status".to_string(),
+            ),
+            IssueHistory::new(
+                "10000".to_string(),
+                "TEST-123".to_string(),
+                "change_3".to_string(),
+                Utc::now(),
+                "assignee".to_string(),
+            ),
+        ];
+        
+        store.save_issue_history(&histories).await.unwrap();
+        
+        let stats = store.get_history_stats().await.unwrap();
+        assert_eq!(stats.total_changes, 3);
+        assert_eq!(stats.unique_issues, 2); // TEST-123, TEST-124
+        assert_eq!(stats.field_change_counts.get("status"), Some(&2));
+        assert_eq!(stats.field_change_counts.get("assignee"), Some(&1));
+    }
+    
+    #[tokio::test]
+    async fn test_json_store_delete_history() {
+        // JsonStoreで履歴削除が正しく動作することをテスト
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = JsonStore::new(temp_dir.path());
+        
+        use crate::IssueHistory;
+        use chrono::Utc;
+        
+        let histories = vec![
+            IssueHistory::new(
+                "10000".to_string(),
+                "TEST-123".to_string(),
+                "change_1".to_string(),
+                Utc::now(),
+                "status".to_string(),
+            ),
+            IssueHistory::new(
+                "10001".to_string(),
+                "TEST-124".to_string(),
+                "change_2".to_string(),
+                Utc::now(),
+                "status".to_string(),
+            ),
+        ];
+        
+        store.save_issue_history(&histories).await.unwrap();
+        
+        // TEST-123の履歴を削除
+        let deleted_count = store.delete_issue_history(&["TEST-123".to_string()]).await.unwrap();
+        assert_eq!(deleted_count, 1);
+        
+        // 残りの履歴を確認
+        let filter = HistoryFilter::new();
+        let remaining_histories = store.load_issue_history(&filter).await.unwrap();
+        assert_eq!(remaining_histories.len(), 1);
+        assert_eq!(remaining_histories[0].issue_key, "TEST-124");
     }
 }

@@ -1,7 +1,9 @@
+pub mod changelog_parser;
 pub mod client;
 pub mod config_store;
 pub mod duckdb_store;
 pub mod error;
+pub mod history;
 pub mod json_store;
 pub mod models;
 pub mod persistence;
@@ -37,3 +39,12 @@ pub use duckdb_store::DuckDBStore;
 
 // Config store re-exports
 pub use config_store::{ConfigStore, FileConfigStore, AppConfig};
+
+// History re-exports
+pub use history::{
+    IssueHistory, HistoryAuthor, HistoryFilter, HistoryStats,
+    ChangeType, HistorySortOrder
+};
+
+// Changelog parser re-export
+pub use changelog_parser::ChangelogParser;

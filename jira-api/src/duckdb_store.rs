@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::task;
 
-use crate::{Issue, Error, PersistenceStore, IssueFilter, FilterConfig, StorageStats, SortOrder};
+use crate::{Issue, Error, PersistenceStore, IssueFilter, FilterConfig, StorageStats, SortOrder, IssueHistory, HistoryFilter, HistoryStats, HistoryAuthor};
 
 /// DuckDB形式のデータストア
 pub struct DuckDBStore {
@@ -88,11 +88,48 @@ impl DuckDBStore {
                 params![],
             )?;
             
+            // 履歴テーブル用のシーケンス作成
+            conn.execute(
+                "CREATE SEQUENCE IF NOT EXISTS history_id_seq START 1",
+                params![],
+            )?;
+            
+            // 履歴テーブルの作成
+            conn.execute(
+                r#"
+                CREATE TABLE IF NOT EXISTS issue_history (
+                    history_id INTEGER PRIMARY KEY DEFAULT nextval('history_id_seq'),
+                    issue_id VARCHAR NOT NULL,
+                    issue_key VARCHAR NOT NULL,
+                    change_id VARCHAR NOT NULL,
+                    change_timestamp TIMESTAMP NOT NULL,
+                    author_account_id VARCHAR,
+                    author_display_name VARCHAR,
+                    author_email VARCHAR,
+                    field_name VARCHAR NOT NULL,
+                    field_id VARCHAR,
+                    from_value VARCHAR,
+                    to_value VARCHAR,
+                    from_display_value VARCHAR,
+                    to_display_value VARCHAR,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                "#,
+                params![],
+            )?;
+            
             // 基本的なインデックスの作成
             conn.execute("CREATE INDEX IF NOT EXISTS idx_issues_project_key ON issues(project_key)", params![])?;
             conn.execute("CREATE INDEX IF NOT EXISTS idx_issues_status_name ON issues(status_name)", params![])?;
             conn.execute("CREATE INDEX IF NOT EXISTS idx_issues_created ON issues(created)", params![])?;
             conn.execute("CREATE INDEX IF NOT EXISTS idx_issues_updated ON issues(updated)", params![])?;
+            
+            // 履歴テーブルのインデックス作成
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_history_issue_key ON issue_history(issue_key)", params![])?;
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_history_change_timestamp ON issue_history(change_timestamp)", params![])?;
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_history_field_name ON issue_history(field_name)", params![])?;
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_history_author ON issue_history(author_account_id)", params![])?;
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_history_composite ON issue_history(issue_key, change_timestamp DESC)", params![])?;
             
             Ok::<(), duckdb::Error>(())
         })
@@ -154,6 +191,71 @@ impl DuckDBStore {
             SortOrder::PriorityDesc => "ORDER BY priority_name DESC NULLS LAST".to_string(),
         }
     }
+    
+    /// 履歴フィルター条件をSQL WHERE句に変換
+    fn build_history_where_clause(&self, filter: &HistoryFilter) -> (String, Vec<String>) {
+        let mut conditions = Vec::new();
+        let mut params = Vec::new();
+        
+        // 課題キーでフィルタ
+        if let Some(ref issue_keys) = filter.issue_keys {
+            if !issue_keys.is_empty() {
+                let placeholders: Vec<String> = issue_keys.iter().map(|_| "?".to_string()).collect();
+                conditions.push(format!("issue_key IN ({})", placeholders.join(", ")));
+                for key in issue_keys {
+                    params.push(key.clone());
+                }
+            }
+        }
+        
+        // フィールド名でフィルタ
+        if let Some(ref field_names) = filter.field_names {
+            if !field_names.is_empty() {
+                let placeholders: Vec<String> = field_names.iter().map(|_| "?".to_string()).collect();
+                conditions.push(format!("field_name IN ({})", placeholders.join(", ")));
+                for field in field_names {
+                    params.push(field.clone());
+                }
+            }
+        }
+        
+        // 変更者でフィルタ
+        if let Some(ref authors) = filter.authors {
+            if !authors.is_empty() {
+                let placeholders: Vec<String> = authors.iter().map(|_| "?".to_string()).collect();
+                conditions.push(format!("author_account_id IN ({})", placeholders.join(", ")));
+                for author in authors {
+                    params.push(author.clone());
+                }
+            }
+        }
+        
+        // 日時範囲でフィルタ（簡素化）
+        if let Some(ref date_range) = filter.date_range {
+            conditions.push("change_timestamp >= ?".to_string());
+            conditions.push("change_timestamp <= ?".to_string());
+            params.push(date_range.start.format("%Y-%m-%d %H:%M:%S").to_string());
+            params.push(date_range.end.format("%Y-%m-%d %H:%M:%S").to_string());
+        }
+        
+        let where_clause = if conditions.is_empty() {
+            "".to_string()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+        
+        (where_clause, params)
+    }
+    
+    /// 履歴ソート順をSQL ORDER BY句に変換  
+    fn build_history_order_clause(&self, sort_order: &crate::HistorySortOrder) -> String {
+        match sort_order {
+            crate::HistorySortOrder::TimestampAsc => "ORDER BY change_timestamp ASC".to_string(),
+            crate::HistorySortOrder::TimestampDesc => "ORDER BY change_timestamp DESC".to_string(),
+            crate::HistorySortOrder::IssueKey => "ORDER BY issue_key ASC".to_string(),
+            crate::HistorySortOrder::FieldName => "ORDER BY field_name ASC".to_string(),
+        }
+    }
 }
 
 #[async_trait]
@@ -201,7 +303,7 @@ impl PersistenceStore for DuckDBStore {
                         &issue.id,
                         &issue.key,
                         &issue.fields.summary,
-                        &issue.fields.description,
+                        issue.fields.description.as_ref().map(|d| d.to_string()),
                         &issue.fields.status.name,
                         issue.fields.priority.as_ref().map(|p| &p.name),
                         &issue.fields.issue_type.name,
@@ -515,6 +617,236 @@ impl PersistenceStore for DuckDBStore {
         .map_err(|e| Error::DatabaseError(format!("Task join error: {}", e)))?
         .map_err(|e| Error::DatabaseError(format!("Load filter config failed: {}", e)))
     }
+    
+    async fn save_issue_history(&mut self, histories: &[IssueHistory]) -> Result<usize, Error> {
+        let conn = Arc::clone(&self.connection);
+        let histories_clone = histories.to_vec();
+        
+        task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            
+            // トランザクション開始
+            conn.execute("BEGIN TRANSACTION", params![])?;
+            
+            let mut saved_count = 0;
+            for history in &histories_clone {
+                let result = conn.execute(
+                    r#"
+                    INSERT INTO issue_history 
+                    (issue_id, issue_key, change_id, change_timestamp, author_account_id, 
+                     author_display_name, author_email, field_name, field_id, from_value, 
+                     to_value, from_display_value, to_display_value, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    "#,
+                    params![
+                        &history.issue_id,
+                        &history.issue_key,
+                        &history.change_id,
+                        &history.change_timestamp.format("%Y-%m-%d %H:%M:%S%.f").to_string(),
+                        &history.author.as_ref().map(|a| &a.account_id),
+                        &history.author.as_ref().map(|a| &a.display_name),
+                        &history.author.as_ref().and_then(|a| a.email_address.as_ref()),
+                        &history.field_name,
+                        &history.field_id,
+                        &history.from_value,
+                        &history.to_value,
+                        &history.from_display_value,
+                        &history.to_display_value,
+                        &history.created_at.format("%Y-%m-%d %H:%M:%S%.f").to_string(),
+                    ],
+                );
+                
+                match result {
+                    Ok(_) => {
+                        saved_count += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to insert history record: {:?}", e);
+                        // Continue with other records instead of failing completely
+                    }
+                }
+            }
+            
+            // トランザクションコミット
+            conn.execute("COMMIT", params![])?;
+            
+            Ok::<usize, duckdb::Error>(saved_count)
+        })
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Task join error: {}", e)))?
+        .map_err(|e| Error::DatabaseError(format!("Save history operation failed: {}", e)))
+    }
+    
+    async fn load_issue_history(&self, filter: &HistoryFilter) -> Result<Vec<IssueHistory>, Error> {
+        let conn = Arc::clone(&self.connection);
+        let (where_clause, filter_params) = self.build_history_where_clause(filter);
+        let order_clause = self.build_history_order_clause(&filter.sort_order);
+        
+        let limit_clause = match filter.limit {
+            Some(limit) => format!("LIMIT {}", limit),
+            None => "".to_string(),
+        };
+        
+        let query = format!(
+            "SELECT issue_id, issue_key, change_id, 
+                    strftime(change_timestamp, '%Y-%m-%d %H:%M:%S.%f') as change_timestamp_str,
+                    author_account_id, author_display_name, author_email, field_name, field_id, from_value,
+                    to_value, from_display_value, to_display_value,
+                    strftime(created_at, '%Y-%m-%d %H:%M:%S.%f') as created_at_str
+             FROM issue_history {} {} {}",
+            where_clause, order_clause, limit_clause
+        );
+        
+        task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(&query)?;
+            
+            let params_refs: Vec<&dyn duckdb::ToSql> = filter_params.iter()
+                .map(|p| p as &dyn duckdb::ToSql)
+                .collect();
+            
+            let rows = stmt.query_map(params_refs.as_slice(), |row| {
+                let issue_id: String = row.get(0)?;
+                let issue_key: String = row.get(1)?;
+                let change_id: String = row.get(2)?;
+                let timestamp_str: String = row.get(3)?;
+                let account_id: Option<String> = row.get(4)?;
+                let display_name: Option<String> = row.get(5)?;
+                let email: Option<String> = row.get(6)?;
+                let field_name: String = row.get(7)?;
+                let field_id: Option<String> = row.get(8)?;
+                let from_value: Option<String> = row.get(9)?;
+                let to_value: Option<String> = row.get(10)?;
+                let from_display: Option<String> = row.get(11)?;
+                let to_display: Option<String> = row.get(12)?;
+                let created_str: String = row.get(13)?;
+                
+                // Parse timestamps
+                let change_timestamp = chrono::DateTime::parse_from_str(&timestamp_str, "%Y-%m-%d %H:%M:%S%.f")
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+                let created_at = chrono::DateTime::parse_from_str(&created_str, "%Y-%m-%d %H:%M:%S%.f")
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+                
+                let author = if let (Some(account_id), Some(display_name)) = (account_id, display_name) {
+                    Some(HistoryAuthor {
+                        account_id,
+                        display_name,
+                        email_address: email,
+                    })
+                } else {
+                    None
+                };
+                
+                let mut history = IssueHistory::new(
+                    issue_id,
+                    issue_key,
+                    change_id,
+                    change_timestamp,
+                    field_name,
+                );
+                
+                if let Some(author) = author {
+                    history = history.with_author(author);
+                }
+                
+                history = history.with_field_change(from_value, to_value, from_display, to_display);
+                
+                if let Some(field_id) = field_id {
+                    history = history.with_field_id(field_id);
+                }
+                
+                // Set the created_at timestamp from database
+                history = history.with_created_at(created_at);
+                
+                Ok(history)
+            })?;
+            
+            let mut histories = Vec::new();
+            for row in rows {
+                histories.push(row?);
+            }
+            
+            Ok::<Vec<IssueHistory>, duckdb::Error>(histories)
+        })
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Task join error: {}", e)))?
+        .map_err(|e| Error::DatabaseError(format!("Load history operation failed: {}", e)))
+    }
+    
+    async fn get_history_stats(&self) -> Result<HistoryStats, Error> {
+        let conn = Arc::clone(&self.connection);
+        
+        task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            
+            let mut stats = HistoryStats::new();
+            
+            // 総変更数
+            let total: i64 = conn.prepare("SELECT COUNT(*) FROM issue_history")?
+                .query_row(params![], |row| row.get(0))?;
+            stats.total_changes = total as usize;
+            
+            // ユニークな課題数
+            let unique_issues: i64 = conn.prepare("SELECT COUNT(DISTINCT issue_key) FROM issue_history")?
+                .query_row(params![], |row| row.get(0))?;
+            stats.unique_issues = unique_issues as usize;
+            
+            // ユニークな変更者数
+            let unique_authors: i64 = conn.prepare(
+                "SELECT COUNT(DISTINCT author_account_id) FROM issue_history WHERE author_account_id IS NOT NULL"
+            )?.query_row(params![], |row| row.get(0))?;
+            stats.unique_authors = unique_authors as usize;
+            
+            // フィールド別変更数
+            let mut stmt = conn.prepare("SELECT field_name, COUNT(*) FROM issue_history GROUP BY field_name")?;
+            let field_rows = stmt.query_map(params![], |row| {
+                let field_name: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((field_name, count as usize))
+            })?;
+            
+            for row in field_rows {
+                let (field_name, count) = row?;
+                stats.field_change_counts.insert(field_name, count);
+            }
+            
+            // 最古・最新の変更日時（簡素化）
+            stats.oldest_change = None; // TODO: 実装
+            stats.newest_change = None; // TODO: 実装
+            
+            Ok::<HistoryStats, duckdb::Error>(stats)
+        })
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Task join error: {}", e)))?
+        .map_err(|e| Error::DatabaseError(format!("History stats operation failed: {}", e)))
+    }
+    
+    async fn delete_issue_history(&mut self, issue_keys: &[String]) -> Result<usize, Error> {
+        let conn = Arc::clone(&self.connection);
+        let keys = issue_keys.to_vec();
+        
+        task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            
+            let placeholders: Vec<String> = keys.iter().map(|_| "?".to_string()).collect();
+            let query = format!(
+                "DELETE FROM issue_history WHERE issue_key IN ({})", 
+                placeholders.join(", ")
+            );
+            
+            let params_refs: Vec<&dyn duckdb::ToSql> = keys.iter()
+                .map(|k| k as &dyn duckdb::ToSql)
+                .collect();
+            
+            let deleted_count = conn.execute(&query, params_refs.as_slice())?;
+            Ok::<usize, duckdb::Error>(deleted_count)
+        })
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Task join error: {}", e)))?
+        .map_err(|e| Error::DatabaseError(format!("Delete history operation failed: {}", e)))
+    }
 }
 
 #[cfg(test)]
@@ -577,7 +909,7 @@ mod tests {
         
         let fields = IssueFields {
             summary: format!("Test issue {}", key),
-            description: Some("Test description".to_string()),
+            description: Some(serde_json::Value::String("Test description".to_string())),
             status: issue_status,
             priority: Some(Priority {
                 id: "1".to_string(),
@@ -804,5 +1136,144 @@ mod tests {
         assert_eq!(loaded_config.description, Some("Test description".to_string()));
         assert_eq!(loaded_config.filter.project_keys, vec!["TEST"]);
         assert_eq!(loaded_config.filter.statuses, vec!["Open"]);
+    }
+    
+    #[tokio::test]
+    async fn test_duckdb_store_save_and_load_history() {
+        // DuckDBStoreで履歴データの保存と読み込みが正しく動作することをテスト
+        let mut store = DuckDBStore::new_in_memory().unwrap();
+        store.initialize().await.unwrap();
+        
+        let author = HistoryAuthor {
+            account_id: "user123".to_string(),
+            display_name: "Test User".to_string(),
+            email_address: Some("test@example.com".to_string()),
+        };
+        
+        let histories = vec![
+            IssueHistory::new(
+                "10000".to_string(),
+                "TEST-123".to_string(), 
+                "change_1".to_string(),
+                Utc::now(),
+                "status".to_string(),
+            ).with_author(author.clone())
+             .with_field_change(
+                 Some("Open".to_string()),
+                 Some("In Progress".to_string()),
+                 Some("Open".to_string()),
+                 Some("In Progress".to_string()),
+             ),
+            IssueHistory::new(
+                "10000".to_string(),
+                "TEST-123".to_string(),
+                "change_2".to_string(),
+                Utc::now(),
+                "assignee".to_string(),
+            ).with_author(author)
+             .with_field_change(
+                 None,
+                 Some("user456".to_string()),
+                 None,
+                 Some("Jane Doe".to_string()),
+             ),
+        ];
+        
+        // 保存
+        let saved_count = store.save_issue_history(&histories).await.unwrap();
+        assert_eq!(saved_count, 2);
+        
+        // 全件読み込み
+        let filter = HistoryFilter::new();
+        let loaded_histories = store.load_issue_history(&filter).await.unwrap();
+        assert_eq!(loaded_histories.len(), 2);
+        
+        // 特定課題の履歴のみ読み込み
+        let filter = HistoryFilter::new()
+            .issue_keys(vec!["TEST-123".to_string()]);
+        let filtered_histories = store.load_issue_history(&filter).await.unwrap();
+        assert_eq!(filtered_histories.len(), 2);
+        
+        // ステータス変更のみ読み込み
+        let filter = HistoryFilter::new()
+            .field_names(vec!["status".to_string()]);
+        let status_histories = store.load_issue_history(&filter).await.unwrap();
+        assert_eq!(status_histories.len(), 1);
+        assert_eq!(status_histories[0].field_name, "status");
+    }
+    
+    #[tokio::test]
+    async fn test_duckdb_store_history_stats() {
+        // DuckDBStoreで履歴統計が正しく動作することをテスト
+        let mut store = DuckDBStore::new_in_memory().unwrap();
+        store.initialize().await.unwrap();
+        
+        let histories = vec![
+            IssueHistory::new(
+                "10000".to_string(),
+                "TEST-123".to_string(),
+                "change_1".to_string(),
+                Utc::now(),
+                "status".to_string(),
+            ),
+            IssueHistory::new(
+                "10001".to_string(),
+                "TEST-124".to_string(),
+                "change_2".to_string(),
+                Utc::now(),
+                "status".to_string(),
+            ),
+            IssueHistory::new(
+                "10000".to_string(),
+                "TEST-123".to_string(),
+                "change_3".to_string(),
+                Utc::now(),
+                "assignee".to_string(),
+            ),
+        ];
+        
+        store.save_issue_history(&histories).await.unwrap();
+        
+        let stats = store.get_history_stats().await.unwrap();
+        assert_eq!(stats.total_changes, 3);
+        assert_eq!(stats.unique_issues, 2); // TEST-123, TEST-124
+        assert_eq!(stats.field_change_counts.get("status"), Some(&2));
+        assert_eq!(stats.field_change_counts.get("assignee"), Some(&1));
+    }
+    
+    #[tokio::test]
+    async fn test_duckdb_store_delete_history() {
+        // DuckDBStoreで履歴削除が正しく動作することをテスト
+        let mut store = DuckDBStore::new_in_memory().unwrap();
+        store.initialize().await.unwrap();
+        
+        let histories = vec![
+            IssueHistory::new(
+                "10000".to_string(),
+                "TEST-123".to_string(),
+                "change_1".to_string(),
+                Utc::now(),
+                "status".to_string(),
+            ),
+            IssueHistory::new(
+                "10001".to_string(),
+                "TEST-124".to_string(),
+                "change_2".to_string(),
+                Utc::now(),
+                "status".to_string(),
+            ),
+        ];
+        
+        store.save_issue_history(&histories).await.unwrap();
+        
+        // TEST-123の履歴を削除
+        let deleted_count = store.delete_issue_history(&["TEST-123".to_string()]).await.unwrap();
+        assert_eq!(deleted_count, 1);
+        
+        // 残りの履歴を確認
+        let filter = HistoryFilter::new();
+        let remaining_histories = store.load_issue_history(&filter).await.unwrap();
+        assert_eq!(remaining_histories.len(), 1);
+        assert_eq!(remaining_histories[0].issue_key, "TEST-124");
     }
 }

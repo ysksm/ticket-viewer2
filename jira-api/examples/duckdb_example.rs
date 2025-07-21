@@ -551,12 +551,12 @@ async fn create_comprehensive_demo_data(store: &mut DuckDBStore) -> Result<(), B
             _ => format!("Demo issue {} - {}", i, issue_type),
         };
         
-        let description = Some(format!(
+        let description = Some(serde_json::Value::String(format!(
             "This is a {} priority {} for the {} project. \
             Created for demonstration purposes with realistic test data. \
             Issue contains relevant details and follows standard formatting.",
             priority.to_lowercase(), issue_type.to_lowercase(), project.1
-        ));
+        )));
         
         let fields = IssueFields {
             summary,

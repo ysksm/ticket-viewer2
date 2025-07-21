@@ -38,6 +38,12 @@ pub enum Error {
     #[error("Database error: {0}")]
     DatabaseError(String),
 
+    #[error("Invalid data: {0}")]
+    InvalidData(String),
+
+    #[error("Invalid filter: {0}")]
+    InvalidFilter(String),
+
     #[error("Unexpected error: {0}")]
     Unexpected(String),
 }

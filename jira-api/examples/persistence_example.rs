@@ -375,7 +375,7 @@ async fn create_demo_data(store: &mut JsonStore) -> Result<(), Box<dyn std::erro
         
         let fields = IssueFields {
             summary: format!("Demo issue {} - {}", i, if i % 2 == 0 { "bug fix" } else { "new feature" }),
-            description: Some(format!("This is a demo issue for testing purposes: {}", i)),
+            description: Some(serde_json::Value::String(format!("This is a demo issue for testing purposes: {}", i))),
             status,
             priority: Some(priority),
             issue_type,

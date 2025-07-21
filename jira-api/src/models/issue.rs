@@ -17,7 +17,7 @@ pub struct Issue {
 pub struct IssueFields {
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    pub description: Option<serde_json::Value>,  // 文字列またはADF形式のオブジェクト
     #[serde(rename = "issuetype")]
     pub issue_type: IssueType,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,7 +131,7 @@ mod tests {
         assert_eq!(issue.id, "10000");
         assert_eq!(issue.key, "TEST-1");
         assert_eq!(issue.fields.summary, "Test Issue");
-        assert_eq!(issue.fields.description, Some("This is a test issue".to_string()));
+        assert_eq!(issue.fields.description, Some(serde_json::Value::String("This is a test issue".to_string())));
         assert_eq!(issue.fields.custom_fields.get("customfield_10001").unwrap(), "Custom Value");
     }
 }

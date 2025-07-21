@@ -135,13 +135,38 @@ impl JiraClient {
             .send()
             .await?;
         
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
+        let status = response.status();
+        println!("=== JIRA API Response ===");
+        println!("Status: {}", status);
+        
+        if !status.is_success() {
             let message = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(crate::error::Error::ApiError { status, message });
+            println!("Error Response: {}", message);
+            println!("=========================");
+            return Err(crate::error::Error::ApiError { status: status.as_u16(), message });
         }
         
-        let data = response.json::<T>().await?;
+        // レスポンステキストを取得してログ出力
+        let response_text = response.text().await?;
+        println!("Response Length: {} bytes", response_text.len());
+        
+        // レスポンステキストの最初の500文字を表示（デバッグ用）
+        let preview = if response_text.len() > 500 {
+            format!("{}...", &response_text[..500])
+        } else {
+            response_text.clone()
+        };
+        println!("Response Preview:\n{}", preview);
+        println!("=========================");
+        
+        // JSONをパースして返す
+        let data = serde_json::from_str::<T>(&response_text)
+            .map_err(|e| {
+                println!("JSON Parse Error: {}", e);
+                println!("Full Response Text:\n{}", response_text);
+                crate::error::Error::SerializationError(format!("JSON parse error: {}", e))
+            })?;
+        
         Ok(data)
     }
 
@@ -166,6 +191,17 @@ impl JiraClient {
         if let Some(validate_query) = params.validate_query {
             body["validateQuery"] = validate_query.into();
         }
+
+        // リクエストボディをログ出力
+        println!("=== JIRA API Request ===");
+        println!("URL: {}/rest/api/3/search", self.config.base_url);
+        println!("Request Body:");
+        if let Ok(pretty_body) = serde_json::to_string_pretty(&body) {
+            println!("{}", pretty_body);
+        } else {
+            println!("{:?}", body);
+        }
+        println!("========================");
 
         self.post("/rest/api/3/search", &body).await
     }
