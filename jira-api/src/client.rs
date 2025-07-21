@@ -171,7 +171,30 @@ impl JiraClient {
     }
 
     pub async fn get_projects(&self) -> Result<Vec<crate::models::Project>> {
-        self.get("/rest/api/3/project").await
+        self.get_projects_with_params(crate::models::ProjectParams::new()).await
+    }
+
+    pub async fn get_projects_with_params(&self, params: crate::models::ProjectParams) -> Result<Vec<crate::models::Project>> {
+        let mut url = "/rest/api/3/project".to_string();
+        let mut query_params = Vec::new();
+
+        // クエリパラメータを構築
+        if let Some(expand) = params.expand {
+            query_params.push(format!("expand={}", expand.join(",")));
+        }
+        if let Some(recent) = params.recent {
+            query_params.push(format!("recent={}", recent));
+        }
+        if let Some(properties) = params.properties {
+            query_params.push(format!("properties={}", properties.join(",")));
+        }
+
+        if !query_params.is_empty() {
+            url.push('?');
+            url.push_str(&query_params.join("&"));
+        }
+
+        self.get(&url).await
     }
 }
 
@@ -772,5 +795,156 @@ mod tests {
             }
             _ => panic!("Expected ApiError"),
         }
+    }
+
+    /// get_projects_with_params()がexpandパラメータで詳細情報付きプロジェクト取得できることをテスト
+    /// 
+    /// テスト内容:
+    /// - expandクエリパラメータが正しくURLに追加される
+    /// - 複数のexpand値がカンマ区切りで結合される
+    /// - GET /rest/api/3/project?expand=lead,descriptionが正しく送信される
+    #[tokio::test]
+    async fn test_get_projects_with_expand() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path, query_param};
+        use serde_json::json;
+        use crate::models::ProjectParams;
+
+        // Given: expandパラメータ付きのモックサーバー
+        let mock_server = MockServer::start().await;
+        
+        let response_body = json!([{
+            "id": "10000",
+            "key": "TEST",
+            "name": "Test Project with Details",
+            "self": "https://example.atlassian.net/rest/api/3/project/10000",
+            "description": "Detailed test project description",
+            "lead": {
+                "accountId": "557058:f58131cb",
+                "displayName": "Project Lead",
+                "emailAddress": "lead@example.com",
+                "self": "https://example.atlassian.net/rest/api/3/user?accountId=557058:f58131cb"
+            }
+        }]);
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/project"))
+            .and(query_param("expand", "lead,description"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test@example.com".to_string(),
+                api_token: "test_token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let params = ProjectParams::new()
+            .expand(vec!["lead".to_string(), "description".to_string()]);
+
+        // When: expandパラメータ付きでプロジェクト取得
+        let result = client.get_projects_with_params(params).await;
+
+        // Then: 成功し、詳細情報付きプロジェクトが返る
+        assert!(result.is_ok());
+        let projects = result.unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "Test Project with Details");
+        assert_eq!(projects[0].description, Some("Detailed test project description".to_string()));
+        assert!(projects[0].lead.is_some());
+    }
+
+    /// get_projects_with_params()がrecentパラメータで最近のプロジェクト取得できることをテスト
+    /// 
+    /// テスト内容:
+    /// - recentクエリパラメータが正しくURLに追加される
+    /// - 数値パラメータが正しく文字列に変換される
+    /// - GET /rest/api/3/project?recent=5が正しく送信される
+    #[tokio::test]
+    async fn test_get_projects_with_recent() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path, query_param};
+        use serde_json::json;
+        use crate::models::ProjectParams;
+
+        // Given: recentパラメータ付きのモックサーバー
+        let mock_server = MockServer::start().await;
+        
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/project"))
+            .and(query_param("recent", "5"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(json!([])))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test@example.com".to_string(),
+                api_token: "test_token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let params = ProjectParams::new().recent(5);
+
+        // When: recentパラメータ付きでプロジェクト取得
+        let result = client.get_projects_with_params(params).await;
+
+        // Then: 成功する
+        assert!(result.is_ok());
+    }
+
+    /// get_projects_with_params()が複数パラメータで正しくクエリ文字列を構築することをテスト
+    /// 
+    /// テスト内容:
+    /// - 複数のクエリパラメータが&で結合される
+    /// - expand、recent、propertiesが同時に設定される
+    /// - クエリ文字列の順序が正しい
+    #[tokio::test]
+    async fn test_get_projects_with_multiple_params() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path, query_param};
+        use serde_json::json;
+        use crate::models::ProjectParams;
+
+        // Given: 複数パラメータ付きのモックサーバー
+        let mock_server = MockServer::start().await;
+        
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/project"))
+            .and(query_param("expand", "lead,description"))
+            .and(query_param("recent", "10"))
+            .and(query_param("properties", "*all"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(json!([])))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test@example.com".to_string(),
+                api_token: "test_token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let params = ProjectParams::new()
+            .expand(vec!["lead".to_string(), "description".to_string()])
+            .recent(10)
+            .properties(vec!["*all".to_string()]);
+
+        // When: 複数パラメータ付きでプロジェクト取得
+        let result = client.get_projects_with_params(params).await;
+
+        // Then: 成功する
+        assert!(result.is_ok());
     }
 }

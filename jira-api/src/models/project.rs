@@ -38,6 +38,39 @@ pub struct ProjectAvatarUrls {
 // Re-export dependent types
 use super::User;
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expand: Option<Vec<String>>,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recent: Option<u32>,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub properties: Option<Vec<String>>,
+}
+
+impl ProjectParams {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    pub fn expand(mut self, expand: Vec<String>) -> Self {
+        self.expand = Some(expand);
+        self
+    }
+    
+    pub fn recent(mut self, count: u32) -> Self {
+        self.recent = Some(count);
+        self
+    }
+    
+    pub fn properties(mut self, properties: Vec<String>) -> Self {
+        self.properties = Some(properties);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,5 +100,30 @@ mod tests {
         assert_eq!(project.key, "TEST");
         assert_eq!(project.name, "Test Project");
         assert_eq!(project.project_type_key, Some("software".to_string()));
+    }
+
+    #[test]
+    fn test_project_params_builder() {
+        let params = ProjectParams::new()
+            .expand(vec!["lead".to_string(), "description".to_string()])
+            .recent(10)
+            .properties(vec!["*all".to_string()]);
+        
+        assert_eq!(params.expand, Some(vec!["lead".to_string(), "description".to_string()]));
+        assert_eq!(params.recent, Some(10));
+        assert_eq!(params.properties, Some(vec!["*all".to_string()]));
+    }
+    
+    #[test]
+    fn test_project_params_serialization() {
+        let params = ProjectParams::new()
+            .expand(vec!["lead".to_string()])
+            .recent(5);
+        
+        let json = serde_json::to_value(&params).unwrap();
+        
+        assert_eq!(json["expand"], json!(["lead"]));
+        assert_eq!(json["recent"], 5);
+        assert!(json.get("properties").is_none()); // None values should be omitted
     }
 }
