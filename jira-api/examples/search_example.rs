@@ -299,10 +299,140 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // 7. 全フィールド取得パターン（*all）
+    println!("\n[7] 全フィールド取得パターン（*all）");
+    let all_fields_search = SearchParams::new()
+        .max_results(2)
+        .fields(vec!["*all".to_string()]);
+    
+    match client.search_issues("order by created DESC", all_fields_search).await {
+        Ok(result) => {
+            println!("    全フィールドで {} 件取得", result.issues.len());
+            for issue in result.issues.iter().take(2) {
+                println!("    {} - {}", issue.key, issue.fields.summary);
+                println!("      ステータス: {}", issue.fields.status.name);
+                println!("      課題タイプ: {}", issue.fields.issue_type.name);
+                println!("      報告者: {}", issue.fields.reporter.display_name);
+                
+                if let Some(assignee) = &issue.fields.assignee {
+                    println!("      担当者: {}", assignee.display_name);
+                    if let Some(email) = &assignee.email_address {
+                        println!("      担当者メール: {}", email);
+                    }
+                } else {
+                    println!("      担当者: 未割当");
+                }
+                
+                if let Some(priority) = &issue.fields.priority {
+                    println!("      優先度: {} ({})", priority.name, priority.id);
+                }
+                
+                println!("      作成日: {}", issue.fields.created);
+                println!("      更新日: {}", issue.fields.updated);
+                
+                // カスタムフィールドの存在確認
+                if !issue.fields.custom_fields.is_empty() {
+                    println!("      カスタムフィールド数: {}", issue.fields.custom_fields.len());
+                }
+                
+                println!(); // 空行
+            }
+        }
+        Err(e) => println!("   [ERROR] エラー: {}", e),
+    }
+
+    // 8. 変更履歴付き検索（expand=changelog）
+    println!("\n[8] 変更履歴付き検索（expand=changelog）");
+    let changelog_search = SearchParams::new()
+        .max_results(2)
+        .fields(vec![
+            "key".to_string(),
+            "summary".to_string(),
+            "status".to_string(),
+            "assignee".to_string(),
+            "priority".to_string(),
+            "created".to_string(),
+            "updated".to_string()
+        ])
+        .expand(vec!["changelog".to_string()]);
+    
+    match client.search_issues("order by updated DESC", changelog_search).await {
+        Ok(result) => {
+            println!("    変更履歴付きで {} 件取得", result.issues.len());
+            for issue in result.issues.iter().take(2) {
+                println!("    {} - {}", issue.key, issue.fields.summary);
+                println!("      現在のステータス: {}", issue.fields.status.name);
+                
+                // 変更履歴の表示（JIRAのchangelogは通常、expandで別途取得される）
+                println!("      最終更新: {}", issue.fields.updated);
+                
+                if let Some(assignee) = &issue.fields.assignee {
+                    println!("      現在の担当者: {}", assignee.display_name);
+                }
+                
+                println!("      変更履歴: expand=changelogで詳細な履歴が取得可能");
+                println!(); // 空行
+            }
+        }
+        Err(e) => println!("   [ERROR] エラー: {}", e),
+    }
+
+    // 9. 全フィールド + 変更履歴のコンビネーション
+    println!("\n[9] 全フィールド + 変更履歴のコンビネーション");
+    let full_search = SearchParams::new()
+        .max_results(1)
+        .fields(vec!["*all".to_string()])
+        .expand(vec!["changelog".to_string()]);
+    
+    match client.search_issues("order by updated DESC", full_search).await {
+        Ok(result) => {
+            println!("    全フィールド+変更履歴で {} 件取得", result.issues.len());
+            for issue in result.issues.iter().take(1) {
+                println!("    {} - {}", issue.key, issue.fields.summary);
+                println!("      完全な情報を含む最大限のデータ取得");
+                println!("      ステータス: {}", issue.fields.status.name);
+                println!("      課題タイプ: {}", issue.fields.issue_type.name);
+                
+                if let Some(assignee) = &issue.fields.assignee {
+                    println!("      担当者: {} ({})", assignee.display_name, assignee.account_id);
+                }
+                
+                if let Some(priority) = &issue.fields.priority {
+                    println!("      優先度: {}", priority.name);
+                    if let Some(description) = &priority.description {
+                        println!("      優先度説明: {}", description);
+                    }
+                }
+                
+                println!("      報告者: {} ({})", 
+                    issue.fields.reporter.display_name, 
+                    issue.fields.reporter.account_id
+                );
+                
+                // カスタムフィールド情報
+                if !issue.fields.custom_fields.is_empty() {
+                    println!("      カスタムフィールド:");
+                    for (key, value) in issue.fields.custom_fields.iter().take(3) {
+                        println!("        {}: {:?}", key, value);
+                    }
+                    if issue.fields.custom_fields.len() > 3 {
+                        println!("        ... その他 {} 個のカスタムフィールド", 
+                            issue.fields.custom_fields.len() - 3);
+                    }
+                }
+                
+                println!("      注記: expand=changelogにより変更履歴も含まれています");
+                println!(); // 空行
+            }
+        }
+        Err(e) => println!("   [ERROR] エラー: {}", e),
+    }
+
     println!("\n検索サンプル完了!");
     println!("\nその他のサンプル:");
     println!("   cargo run --example basic_usage");
     println!("   cargo run --example project_example");
+    println!("   cargo run --example config_store_example");
     
     Ok(())
 }

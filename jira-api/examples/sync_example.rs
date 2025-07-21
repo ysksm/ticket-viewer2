@@ -266,11 +266,160 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => println!("    期待通りの無効フィルター検出: {}", e),
     }
 
+    // 12. 全フィールド取得での同期（除外フィールドなし = 全取得）
+    println!("\n[12] 全フィールド取得での同期");
+    
+    let all_fields_config = SyncConfig::new()
+        .interval_minutes(60)
+        .enable_time_optimization(false) // 全フィールド取得時は時間最適化無効
+        .concurrent_sync_count(1) // 負荷軽減のため1つずつ
+        .excluded_fields(vec![]); // 除外フィールドなし = 全フィールド取得
+        
+    let all_fields_sync = SyncService::new(all_fields_config);
+    
+    println!("    全フィールド同期設定:");
+    println!("    - 除外フィールド: {:?} (空 = 全フィールド取得)", all_fields_sync.config().excluded_fields);
+    println!("    - 時間最適化: {}", all_fields_sync.config().enable_time_optimization);
+    
+    // テスト同期（実際には大量のデータが取得される）
+    println!("    注記: SearchParamsでfields=*allを指定することで全カスタムフィールドが取得されます");
+    println!("    注記: 実際の同期では大量のデータ転送が発生する可能性があります");
+
+    // 13. 変更履歴付き同期（expand=changelog）
+    println!("\n[13] 変更履歴付き同期");
+    
+    let changelog_config = SyncConfig::new()
+        .interval_minutes(30)
+        .enable_time_optimization(true)
+        .concurrent_sync_count(1) // changelogは重いため1つずつ
+        .excluded_fields(vec![
+            "description".to_string(),
+            "comment".to_string()
+        ]); // 重いフィールドを除外して基本フィールド + changelogを取得
+        
+    let changelog_sync = SyncService::new(changelog_config);
+    
+    println!("    変更履歴同期設定:");
+    println!("    - 除外フィールド: {:?}", changelog_sync.config().excluded_fields);
+    println!("    - 並行処理数: {} (changelogは重い処理のため)", changelog_sync.config().concurrent_sync_count);
+    
+    println!("    注記: SearchParamsでexpand=changelogを指定することで変更履歴が取得されます");
+    println!("    注記: ステータス変更、担当者変更、フィールド更新等の詳細履歴が含まれます");
+
+    // 14. フル機能同期（全フィールド + 変更履歴）
+    println!("\n[14] フル機能同期（全フィールド + 変更履歴）");
+    
+    let full_config = SyncConfig::new()
+        .interval_minutes(120) // 2時間間隔（重い処理のため）
+        .enable_time_optimization(true)
+        .concurrent_sync_count(1) // 負荷軽減
+        .excluded_fields(vec![]) // フィールド除外なし = 全フィールド取得
+        .target_projects(vec!["CRITICAL".to_string()]) // 重要プロジェクトのみ
+        .max_history_count(5); // 履歴も少なめに
+        
+    let full_sync = SyncService::new(full_config);
+    
+    println!("    フル機能同期設定:");
+    println!("    - 除外フィールド: {:?} (空 = 全フィールド取得)", full_sync.config().excluded_fields);
+    println!("    - 対象プロジェクト: {:?}", full_sync.config().target_projects);
+    println!("    - 同期間隔: {} 分（重い処理のため長め）", full_sync.config().interval_minutes);
+    println!("    - 最大履歴数: {} (メモリ使用量を抑制)", full_sync.config().max_history_count);
+    
+    println!("    注記: SearchParamsで fields=*all, expand=changelog を指定");
+    println!("    注記: 全フィールド + 全変更履歴 = 最も詳細だが最も重い処理");
+    println!("    注記: 本番環境では対象プロジェクトを限定することを推奨");
+
+    // 15. パフォーマンス比較シミュレーション
+    println!("\n[15] パフォーマンス比較（シミュレーション）");
+    
+    // 基本同期（多くのフィールドを除外）
+    let basic_config = SyncConfig::new()
+        .excluded_fields(vec![
+            "description".to_string(),
+            "comment".to_string(), 
+            "attachment".to_string(),
+            "worklog".to_string()
+        ]);
+    let basic_sync = SyncService::new(basic_config);
+    
+    // 全フィールド同期（除外なし）
+    let all_sync = SyncService::new(
+        SyncConfig::new().excluded_fields(vec![])
+    );
+    
+    // 軽量同期（重いフィールドのみ除外）
+    let lightweight_sync = SyncService::new(
+        SyncConfig::new()
+            .excluded_fields(vec!["description".to_string(), "comment".to_string()])
+    );
+    
+    println!("    同期設定の比較:");
+    println!("    基本同期 (重いフィールドを除外):");
+    println!("      - 除外フィールド: {:?}", basic_sync.config().excluded_fields);
+    println!("      - 予想データ転送量: 小");
+    println!("      - 予想処理時間: 高速");
+    println!("      - 適用場面: ダッシュボード、一覧表示");
+    
+    println!("    軽量同期 (最低限の除外):");
+    println!("      - 除外フィールド: {:?}", lightweight_sync.config().excluded_fields);
+    println!("      - 予想データ転送量: 中");
+    println!("      - 予想処理時間: 中程度");
+    println!("      - 適用場面: 詳細表示、レポート");
+    
+    println!("    全フィールド同期 (除外なし):");
+    println!("      - 除外フィールド: {:?}", all_sync.config().excluded_fields);
+    println!("      - 予想データ転送量: 大");
+    println!("      - 予想処理時間: 低速");
+    println!("      - 適用場面: 完全バックアップ、詳細分析");
+    
+    println!("    注記: SearchParamsで fields=*all, expand=changelog を追加指定可能");
+
+    // 16. 実際の同期テスト（軽量版）
+    println!("\n[16] 軽量同期テスト");
+    
+    let test_config = SyncConfig::new()
+        .interval_minutes(5)
+        .max_history_count(3)
+        .excluded_fields(vec![
+            "description".to_string(),
+            "comment".to_string(),
+            "attachment".to_string(),
+            "worklog".to_string(),
+            "subtasks".to_string()
+        ]) // 重いフィールドを除外して軽量化
+        .target_projects(vec![]); // 全プロジェクト対象（制限なし）
+        
+    let mut test_sync = SyncService::new(test_config);
+    
+    if test_sync.should_sync() {
+        println!("    軽量同期を実行中...");
+        match test_sync.sync_full(&client).await {
+            Ok(result) => {
+                println!("    [OK] 軽量同期完了!");
+                println!("      同期Issue数: {} 件", result.synced_issues_count);
+                println!("      処理時間: {:.2} 秒", result.duration_seconds());
+                
+                // 取得したデータの特徴を表示
+                if result.synced_issues_count > 0 {
+                    println!("    データ特徴:");
+                    println!("      - 基本フィールドのみ取得");
+                    println!("      - 変更履歴は含まれません");
+                    println!("      - カスタムフィールドは含まれません");
+                }
+            }
+            Err(e) => {
+                println!("    [ERROR] 軽量同期エラー: {}", e);
+                println!("    注記: 実際のJIRA APIへの接続が必要です");
+            }
+        }
+    }
+
     println!("\n同期機能サンプル完了!");
-    println!("\nその他のサンプル:");
-    println!("   cargo run --example basic_usage");
-    println!("   cargo run --example search_example");
-    println!("   cargo run --example project_example");
+    println!("\n機能別サンプル:");
+    println!("   cargo run --example basic_usage        # 基本的な使用方法");
+    println!("   cargo run --example search_example     # 検索機能（*all, changelog含む）");
+    println!("   cargo run --example project_example    # プロジェクト情報取得");
+    println!("   cargo run --example config_store_example # 設定管理");
     
     Ok(())
 }
