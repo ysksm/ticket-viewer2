@@ -255,7 +255,7 @@ impl JiraClient {
     ///     println!("{}: {} (subtask: {})", 
     ///         issue_type.name, 
     ///         issue_type.description.unwrap_or_default(),
-    ///         issue_type.subtask
+    ///         issue_type.subtask.unwrap_or(false)
     ///     );
     /// }
     /// # Ok(())
@@ -263,6 +263,120 @@ impl JiraClient {
     /// ```
     pub async fn get_issue_types(&self) -> Result<Vec<crate::models::IssueType>> {
         self.get("/rest/api/3/issuetype").await
+    }
+
+    /// JIRAのフィールド一覧を取得する
+    /// 
+    /// # Returns
+    /// 
+    /// `Result<Vec<Field>>` - フィールドのベクター、またはエラー
+    /// 
+    /// # Examples
+    /// 
+    /// ```no_run
+    /// use jira_api::{JiraClient, JiraConfig, Auth};
+    /// 
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let config = JiraConfig::new(
+    ///     "https://your-domain.atlassian.net".to_string(),
+    ///     Auth::Basic {
+    ///         username: "user@example.com".to_string(),
+    ///         api_token: "api-token".to_string(),
+    ///     }
+    /// )?;
+    /// let client = JiraClient::new(config)?;
+    /// let fields = client.get_fields().await?;
+    /// for field in fields {
+    ///     println!("{}: {} (custom: {})", 
+    ///         field.id, 
+    ///         field.name,
+    ///         field.custom.unwrap_or(false)
+    ///     );
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_fields(&self) -> Result<Vec<crate::models::Field>> {
+        self.get("/rest/api/3/field").await
+    }
+
+    /// JIRAのステータスカテゴリー一覧を取得する
+    /// 
+    /// # Returns
+    /// 
+    /// `Result<Vec<StatusCategory>>` - ステータスカテゴリーのベクター、またはエラー
+    /// 
+    /// # Examples
+    /// 
+    /// ```no_run
+    /// use jira_api::{JiraClient, JiraConfig, Auth};
+    /// 
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let config = JiraConfig::new(
+    ///     "https://your-domain.atlassian.net".to_string(),
+    ///     Auth::Basic {
+    ///         username: "user@example.com".to_string(),
+    ///         api_token: "api-token".to_string(),
+    ///     }
+    /// )?;
+    /// let client = JiraClient::new(config)?;
+    /// let categories = client.get_status_categories().await?;
+    /// for category in categories {
+    ///     println!("{}: {} ({})", 
+    ///         category.key, 
+    ///         category.name,
+    ///         category.color_name
+    ///     );
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_status_categories(&self) -> Result<Vec<crate::models::StatusCategory>> {
+        self.get("/rest/api/3/statuscategory").await
+    }
+
+    /// JIRAでユーザーを検索する
+    /// 
+    /// # Arguments
+    /// 
+    /// * `query` - 検索クエリ文字列（ユーザー名、表示名、メールアドレスの一部など）
+    /// 
+    /// # Returns
+    /// 
+    /// `Result<Vec<User>>` - 検索にマッチしたユーザーのベクター、またはエラー
+    /// 
+    /// # Examples
+    /// 
+    /// ```no_run
+    /// use jira_api::{JiraClient, JiraConfig, Auth};
+    /// 
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let config = JiraConfig::new(
+    ///     "https://your-domain.atlassian.net".to_string(),
+    ///     Auth::Basic {
+    ///         username: "user@example.com".to_string(),
+    ///         api_token: "api-token".to_string(),
+    ///     }
+    /// )?;
+    /// let client = JiraClient::new(config)?;
+    /// let users = client.search_users("john").await?;
+    /// for user in users {
+    ///     println!("{}: {} ({})", 
+    ///         user.account_id, 
+    ///         user.display_name,
+    ///         user.email_address.unwrap_or_default()
+    ///     );
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn search_users(&self, query: &str) -> Result<Vec<crate::models::User>> {
+        let encoded_query = urlencoding::encode(query);
+        let url = format!("/rest/api/3/user/search?query={}", encoded_query);
+        self.get(&url).await
     }
 }
 
@@ -1223,6 +1337,366 @@ mod tests {
 
         let client = JiraClient::new(config).unwrap();
         let result = client.get_issue_types().await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(matches!(error, crate::Error::ApiError { status: 404, .. }));
+    }
+
+    /// get_fields()が正常にフィールド一覧を取得できることをテスト
+    /// 
+    /// テスト内容:
+    /// - /rest/api/3/fieldエンドポイントに正しくGETリクエストが送信される
+    /// - レスポンスが正しくField構造体にデシリアライズされる
+    /// - 複数のフィールドが含まれる場合の動作確認
+    #[tokio::test]
+    async fn test_get_fields() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+        use serde_json::json;
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/field"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(json!([
+                    {
+                        "id": "summary",
+                        "key": "summary",
+                        "name": "Summary",
+                        "custom": false,
+                        "orderable": true,
+                        "navigable": true,
+                        "searchable": true,
+                        "schema": {
+                            "type": "string",
+                            "system": "summary"
+                        }
+                    },
+                    {
+                        "id": "issuetype",
+                        "key": "issuetype",
+                        "name": "Issue Type",
+                        "custom": false,
+                        "orderable": true,
+                        "navigable": true,
+                        "searchable": true,
+                        "schema": {
+                            "type": "issuetype",
+                            "system": "issuetype"
+                        }
+                    },
+                    {
+                        "id": "customfield_10001",
+                        "key": "customfield_10001",
+                        "name": "Story Points",
+                        "custom": true,
+                        "orderable": true,
+                        "navigable": true,
+                        "searchable": true,
+                        "schema": {
+                            "type": "number",
+                            "custom": "com.atlassian.jira.plugin.system.customfieldtypes:float",
+                            "customId": 10001
+                        }
+                    }
+                ])))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test".to_string(),
+                api_token: "token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let result = client.get_fields().await;
+
+        assert!(result.is_ok());
+        let fields = result.unwrap();
+        assert_eq!(fields.len(), 3);
+        
+        assert_eq!(fields[0].id, "summary");
+        assert_eq!(fields[0].name, "Summary");
+        assert_eq!(fields[0].custom, Some(false));
+        
+        assert_eq!(fields[1].id, "issuetype");
+        assert_eq!(fields[1].name, "Issue Type");
+        assert_eq!(fields[1].custom, Some(false));
+        
+        assert_eq!(fields[2].id, "customfield_10001");
+        assert_eq!(fields[2].name, "Story Points");
+        assert_eq!(fields[2].custom, Some(true));
+    }
+
+    /// get_fields()がHTTPエラーを適切に処理することをテスト
+    /// 
+    /// テスト内容:
+    /// - 404エラー時にNotFoundエラーが返される
+    #[tokio::test]
+    async fn test_get_fields_error_handling() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/field"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test".to_string(),
+                api_token: "token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let result = client.get_fields().await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(matches!(error, crate::Error::ApiError { status: 404, .. }));
+    }
+
+    /// get_status_categories()が正常にステータスカテゴリー一覧を取得できることをテスト
+    /// 
+    /// テスト内容:
+    /// - /rest/api/3/statuscategoryエンドポイントに正しくGETリクエストが送信される
+    /// - レスポンスが正しくStatusCategory構造体にデシリアライズされる
+    /// - 複数のステータスカテゴリーが含まれる場合の動作確認
+    #[tokio::test]
+    async fn test_get_status_categories() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+        use serde_json::json;
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/statuscategory"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(json!([
+                    {
+                        "id": 1,
+                        "key": "undefined",
+                        "name": "No Category",
+                        "colorName": "medium-gray"
+                    },
+                    {
+                        "id": 2,
+                        "key": "new",
+                        "name": "To Do",
+                        "colorName": "blue-gray"
+                    },
+                    {
+                        "id": 3,
+                        "key": "indeterminate",
+                        "name": "In Progress",
+                        "colorName": "yellow"
+                    },
+                    {
+                        "id": 4,
+                        "key": "done",
+                        "name": "Done",
+                        "colorName": "green"
+                    }
+                ])))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test".to_string(),
+                api_token: "token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let result = client.get_status_categories().await;
+
+        assert!(result.is_ok());
+        let categories = result.unwrap();
+        assert_eq!(categories.len(), 4);
+        
+        assert_eq!(categories[0].id, 1);
+        assert_eq!(categories[0].key, "undefined");
+        assert_eq!(categories[0].name, "No Category");
+        assert_eq!(categories[0].color_name, "medium-gray");
+        
+        assert_eq!(categories[1].id, 2);
+        assert_eq!(categories[1].key, "new");
+        assert_eq!(categories[1].name, "To Do");
+        
+        assert_eq!(categories[3].id, 4);
+        assert_eq!(categories[3].key, "done");
+        assert_eq!(categories[3].name, "Done");
+    }
+
+    /// get_status_categories()がHTTPエラーを適切に処理することをテスト
+    /// 
+    /// テスト内容:
+    /// - 404エラー時にNotFoundエラーが返される
+    #[tokio::test]
+    async fn test_get_status_categories_error_handling() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/statuscategory"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test".to_string(),
+                api_token: "token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let result = client.get_status_categories().await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(matches!(error, crate::Error::ApiError { status: 404, .. }));
+    }
+
+    /// search_users()が正常にユーザー検索を実行できることをテスト
+    /// 
+    /// テスト内容:
+    /// - /rest/api/3/users/searchエンドポイントに正しくGETリクエストが送信される
+    /// - クエリパラメータが正しく設定される
+    /// - レスポンスが正しくUser構造体にデシリアライズされる
+    #[tokio::test]
+    async fn test_search_users() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path, query_param};
+        use serde_json::json;
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/user/search"))
+            .and(query_param("query", "test"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(json!([
+                    {
+                        "accountId": "557058:f58131cb-b67d-43c7-b30d-6b58d40bd077",
+                        "displayName": "Test User",
+                        "emailAddress": "test@example.com",
+                        "self": "https://example.atlassian.net/rest/api/3/user?accountId=557058:f58131cb",
+                        "active": true
+                    },
+                    {
+                        "accountId": "557058:a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6",
+                        "displayName": "Another Test User",
+                        "emailAddress": "another@example.com", 
+                        "self": "https://example.atlassian.net/rest/api/3/user?accountId=557058:a1b2c3d4",
+                        "active": true
+                    }
+                ])))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test".to_string(),
+                api_token: "token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let result = client.search_users("test").await;
+
+        assert!(result.is_ok());
+        let users = result.unwrap();
+        assert_eq!(users.len(), 2);
+        
+        assert_eq!(users[0].account_id, "557058:f58131cb-b67d-43c7-b30d-6b58d40bd077");
+        assert_eq!(users[0].display_name, "Test User");
+        assert_eq!(users[0].email_address, Some("test@example.com".to_string()));
+        
+        assert_eq!(users[1].account_id, "557058:a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6");
+        assert_eq!(users[1].display_name, "Another Test User");
+    }
+
+    /// search_users()が空のクエリを適切に処理することをテスト
+    /// 
+    /// テスト内容:
+    /// - 空のクエリでも正常にリクエストが送信される
+    #[tokio::test]
+    async fn test_search_users_empty_query() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path, query_param};
+        use serde_json::json;
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/user/search"))
+            .and(query_param("query", ""))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(json!([])))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test".to_string(),
+                api_token: "token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let result = client.search_users("").await;
+
+        assert!(result.is_ok());
+        let users = result.unwrap();
+        assert_eq!(users.len(), 0);
+    }
+
+    /// search_users()がHTTPエラーを適切に処理することをテスト
+    /// 
+    /// テスト内容:
+    /// - 404エラー時にNotFoundエラーが返される
+    #[tokio::test]
+    async fn test_search_users_error_handling() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/user/search"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let config = JiraConfig {
+            base_url: mock_server.uri(),
+            auth: Auth::Basic {
+                username: "test".to_string(),
+                api_token: "token".to_string(),
+            },
+        };
+
+        let client = JiraClient::new(config).unwrap();
+        let result = client.search_users("test").await;
 
         assert!(result.is_err());
         let error = result.unwrap_err();
