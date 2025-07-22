@@ -32,7 +32,7 @@ mod tests {
         });
 
         let issue_type: IssueType = serde_json::from_value(json_data).unwrap();
-        
+
         assert_eq!(issue_type.id, "1");
         assert_eq!(issue_type.name, "Bug");
         assert_eq!(issue_type.subtask, Some(false));

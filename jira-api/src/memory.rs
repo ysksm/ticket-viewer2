@@ -1,17 +1,16 @@
+use crate::{Error, Issue};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 /// メモリ効率改善のためのユーティリティ
-/// 
+///
 /// このモジュールは、JIRA APIライブラリのメモリ使用量を最適化するための
 /// 機能を提供します：
 /// 1. データの遅延読み込み（Lazy Loading）
 /// 2. 効率的なデータストリーミング
 /// 3. メモリプールの管理
 /// 4. ガベージコレクション支援
-
 use std::sync::Arc;
-use std::collections::HashMap;
 use tokio::sync::{Mutex, RwLock};
-use serde::{Deserialize, Serialize};
-use crate::{Issue, Error};
 
 /// メモリ効率の設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,7 +34,7 @@ impl Default for MemoryConfig {
             page_size: 100,
             cache_size: 1000,
             compression_threshold: 1024 * 1024, // 1MB
-            gc_interval_seconds: 300, // 5分
+            gc_interval_seconds: 300,           // 5分
         }
     }
 }
@@ -95,7 +94,10 @@ impl PartialEq for DetailStatus {
 /// Issue データの遅延読み込みトレイト
 pub trait IssueLoader: Send + Sync {
     /// Issue の詳細データを読み込む
-    fn load_details(&self, issue_key: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Issue, Error>> + Send + '_>>;
+    fn load_details(
+        &self,
+        issue_key: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Issue, Error>> + Send + '_>>;
 }
 
 impl LazyIssue {
@@ -104,7 +106,7 @@ impl LazyIssue {
         id: String,
         key: String,
         summary: String,
-        loader: Option<Arc<dyn IssueLoader>>
+        loader: Option<Arc<dyn IssueLoader>>,
     ) -> Self {
         Self {
             id,
@@ -133,20 +135,22 @@ impl LazyIssue {
     /// 詳細データを非同期で読み込む（簡略版）
     pub async fn load_details(&mut self) -> Result<&Issue, Error> {
         // 簡略版の実装 - 実際の読み込みは今後の実装で追加
-        Err(Error::Unexpected("LazyIssue loading not yet implemented".to_string()))
+        Err(Error::Unexpected(
+            "LazyIssue loading not yet implemented".to_string(),
+        ))
     }
 
     /// メモリ使用量を推定（バイト）
     pub fn estimated_memory_usage(&self) -> usize {
         let base_size = std::mem::size_of::<Self>();
         let string_sizes = self.id.len() + self.key.len() + self.summary.len();
-        
+
         let detail_size = match &self.detail_status {
             DetailStatus::Loaded(_) => 8000, // 平均的なIssueサイズの推定
             DetailStatus::Error(msg) => msg.len(),
             _ => 0,
         };
-        
+
         base_size + string_sizes + detail_size
     }
 }
@@ -168,18 +172,25 @@ pub struct IssueStream {
 /// Issue ストリームのデータ読み込みトレイト
 pub trait IssueStreamLoader: Send + Sync {
     /// 指定されたページのデータを読み込む
-    fn load_page(&self, page: usize, page_size: usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<LazyIssue>, Error>> + Send + '_>>;
-    
+    fn load_page(
+        &self,
+        page: usize,
+        page_size: usize,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<LazyIssue>, Error>> + Send + '_>,
+    >;
+
     /// 総ページ数を取得（可能な場合）
-    fn total_pages(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<usize>, Error>> + Send + '_>>;
+    fn total_pages(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<usize>, Error>> + Send + '_>,
+    >;
 }
 
 impl IssueStream {
     /// 新しいIssue ストリームを作成
-    pub fn new(
-        config: MemoryConfig,
-        loader: Arc<dyn IssueStreamLoader>
-    ) -> Self {
+    pub fn new(config: MemoryConfig, loader: Arc<dyn IssueStreamLoader>) -> Self {
         Self {
             _config: config,
             current_page: 0,
@@ -224,13 +235,13 @@ impl IssueStream {
     async fn estimate_cache_memory_usage(&self) -> usize {
         let cache = self.page_cache.read().await;
         let mut total_usage = 0;
-        
+
         for page_data in cache.values() {
             for issue in page_data {
                 total_usage += issue.estimated_memory_usage();
             }
         }
-        
+
         total_usage
     }
 
@@ -238,30 +249,42 @@ impl IssueStream {
     #[allow(dead_code)]
     async fn cleanup_cache(&self) {
         let mut cache = self.page_cache.write().await;
-        
+
         // 現在のページから離れたページを優先的に削除
         let current = self.current_page;
         let mut pages_to_remove = Vec::new();
-        
+
         for &page in cache.keys() {
-            let distance = if page > current { page - current } else { current - page };
-            if distance > 5 { // 現在のページから5ページ以上離れている場合
+            let distance = if page > current {
+                page - current
+            } else {
+                current - page
+            };
+            if distance > 5 {
+                // 現在のページから5ページ以上離れている場合
                 pages_to_remove.push(page);
             }
         }
-        
+
         // メモリ使用量が半分以下になるまで削除
         pages_to_remove.sort_by_key(|&page| {
-            let distance = if page > current { page - current } else { current - page };
+            let distance = if page > current {
+                page - current
+            } else {
+                current - page
+            };
             std::cmp::Reverse(distance) // 遠いページから削除
         });
-        
+
         let target_size = cache.len() / 2;
         for &page in pages_to_remove.iter().take(cache.len() - target_size) {
             cache.remove(&page);
         }
-        
-        println!("🧹 Memory cleanup: removed {} cached pages", pages_to_remove.len());
+
+        println!(
+            "🧹 Memory cleanup: removed {} cached pages",
+            pages_to_remove.len()
+        );
     }
 }
 
@@ -279,8 +302,8 @@ pub struct MemoryPool<T> {
 
 impl<T: Send + 'static> MemoryPool<T> {
     /// 新しいメモリプールを作成
-    pub fn new<F>(factory: F, max_size: usize) -> Self 
-    where 
+    pub fn new<F>(factory: F, max_size: usize) -> Self
+    where
         F: Fn() -> T + Send + Sync + 'static,
     {
         Self {
@@ -292,8 +315,8 @@ impl<T: Send + 'static> MemoryPool<T> {
     }
 
     /// オブジェクトを取得
-    pub async fn acquire(&self) -> PooledObject<T> 
-    where 
+    pub async fn acquire(&self) -> PooledObject<T>
+    where
         T: Send,
     {
         let mut available = self.available.lock().await;
@@ -319,7 +342,7 @@ impl<T: Send + 'static> MemoryPool<T> {
     pub async fn stats(&self) -> PoolStats {
         let available_count = self.available.lock().await.len();
         let in_use_count = *self.in_use_count.lock().await;
-        
+
         PoolStats {
             available_count,
             in_use_count,
@@ -371,9 +394,9 @@ impl<T> PoolReturn<T> {
     async fn return_object(&self, object: T) {
         let mut available = self.available.lock().await;
         let mut in_use_count = self.in_use_count.lock().await;
-        
+
         *in_use_count -= 1;
-        
+
         // プールサイズが最大値を超えない場合のみ返却
         if available.len() < self.max_size {
             available.push(object);
@@ -420,9 +443,11 @@ pub struct MemoryGC {
 pub trait MemoryPoolGC: Send + Sync {
     /// GCを実行
     fn run_gc(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
-    
+
     /// メモリ使用量を取得
-    fn memory_usage(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + '_>>;
+    fn memory_usage(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + '_>>;
 }
 
 impl MemoryGC {
@@ -452,10 +477,10 @@ impl MemoryGC {
 
         let handle = tokio::spawn(async move {
             let mut gc_interval = tokio::time::interval(interval);
-            
+
             loop {
                 gc_interval.tick().await;
-                
+
                 // 簡略版GC実装
                 if !pools.is_empty() {
                     println!("🗑️  Running simplified GC...");
@@ -491,12 +516,12 @@ impl Drop for MemoryGC {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     #[test]
     fn test_memory_config_default() {
         let config = MemoryConfig::default();
-        
+
         assert_eq!(config.max_memory_usage, 256 * 1024 * 1024);
         assert_eq!(config.page_size, 100);
         assert_eq!(config.cache_size, 1000);
@@ -531,30 +556,31 @@ mod tests {
 
         let memory_usage = lazy_issue.estimated_memory_usage();
         assert!(memory_usage > 0);
-        
+
         // 基本的なサイズチェック（文字列長 + 構造体サイズ）
-        let expected_min = "123".len() + "TEST-1".len() + "Test issue".len() + std::mem::size_of::<LazyIssue>();
+        let expected_min =
+            "123".len() + "TEST-1".len() + "Test issue".len() + std::mem::size_of::<LazyIssue>();
         assert!(memory_usage >= expected_min);
     }
 
     #[tokio::test]
     async fn test_memory_pool_basic_operations() {
         let pool = MemoryPool::new(|| String::from("test"), 5);
-        
+
         // オブジェクトを取得
         let obj1 = pool.acquire().await;
         assert_eq!(obj1.as_ref(), "test");
-        
+
         let stats = pool.stats().await;
         assert_eq!(stats.in_use_count, 1);
         assert_eq!(stats.available_count, 0);
-        
+
         // オブジェクトを返却（drop時に自動返却）
         drop(obj1);
-        
+
         // 少し待機して返却処理の完了を待つ
         sleep(Duration::from_millis(10)).await;
-        
+
         let stats = pool.stats().await;
         assert_eq!(stats.in_use_count, 0);
         assert_eq!(stats.available_count, 1);
@@ -563,15 +589,15 @@ mod tests {
     #[tokio::test]
     async fn test_memory_pool_reuse() {
         let pool = MemoryPool::new(|| vec![1, 2, 3], 3);
-        
+
         {
             let mut obj = pool.acquire().await;
             obj.as_mut().push(4);
             assert_eq!(obj.as_ref(), &vec![1, 2, 3, 4]);
         } // オブジェクトがここで返却される
-        
+
         sleep(Duration::from_millis(10)).await;
-        
+
         // 新しいオブジェクトを取得（再利用される可能性）
         let obj2 = pool.acquire().await;
         // プールから再利用される場合、前の状態が残っている可能性がある
@@ -582,12 +608,12 @@ mod tests {
     #[tokio::test]
     async fn test_memory_pool_max_size_limit() {
         let pool = MemoryPool::new(|| String::from("pooled"), 2);
-        
+
         // プールの最大サイズを超えてオブジェクトを作成
         let _obj1 = pool.acquire().await;
         let _obj2 = pool.acquire().await;
         let _obj3 = pool.acquire().await; // 最大サイズを超過
-        
+
         let stats = pool.stats().await;
         assert_eq!(stats.in_use_count, 3); // 使用中は3個
         assert!(stats.total_created >= 3); // 少なくとも3個は作成された
@@ -620,7 +646,7 @@ mod tests {
         assert_eq!(DetailStatus::NotLoaded, DetailStatus::NotLoaded);
         assert_eq!(DetailStatus::Loading, DetailStatus::Loading);
         assert_ne!(DetailStatus::NotLoaded, DetailStatus::Loading);
-        
+
         let error1 = DetailStatus::Error("test".to_string());
         let error2 = DetailStatus::Error("test".to_string());
         assert_eq!(error1, error2);
@@ -630,7 +656,7 @@ mod tests {
     async fn test_memory_gc_creation() {
         let config = MemoryConfig::default();
         let gc = MemoryGC::new(config);
-        
+
         assert!(gc.pools.is_empty());
         assert!(gc.gc_handle.is_none());
     }

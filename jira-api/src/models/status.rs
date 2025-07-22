@@ -50,7 +50,7 @@ mod tests {
         });
 
         let status: Status = serde_json::from_value(json_data).unwrap();
-        
+
         assert_eq!(status.id, "1");
         assert_eq!(status.name, "To Do");
         assert_eq!(status.status_category.key, "new");

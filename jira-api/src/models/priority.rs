@@ -32,7 +32,7 @@ mod tests {
         });
 
         let priority: Priority = serde_json::from_value(json_data).unwrap();
-        
+
         assert_eq!(priority.id, "3");
         assert_eq!(priority.name, "Medium");
         assert_eq!(priority.status_color, Some("#EA7D24".to_string()));

@@ -1,24 +1,21 @@
 /// JIRA APIクライアントの基本的な使用例
-/// 
+///
 /// 実行前に環境変数を設定してください：
 /// export JIRA_URL=https://your-instance.atlassian.net
 /// export JIRA_USER=your-email@example.com
 /// export JIRA_API_TOKEN=your-api-token
-/// 
+///
 /// 実行方法：
 /// cargo run --example basic_usage
-
 use dotenv::dotenv;
 use std::env;
 
-use jira_api::{
-    Auth, JiraClient, JiraConfig, SearchParams, ProjectParams
-};
+use jira_api::{Auth, JiraClient, JiraConfig, ProjectParams, SearchParams};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
-    
+
     println!("JIRA API クライアント基本使用例");
     println!("==================================");
 
@@ -31,13 +28,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => {
             println!("[WARNING] 環境変数が設定されていません。デフォルト値を使用します。");
             println!("   実際のAPIを呼び出すには環境変数を設定してください。");
-            
+
             let base_url = env::var("JIRA_URL")
                 .unwrap_or_else(|_| "https://your-domain.atlassian.net".to_string());
-            let username = env::var("JIRA_USER")
-                .unwrap_or_else(|_| "your-email@example.com".to_string());
-            let api_token = env::var("JIRA_API_TOKEN")
-                .unwrap_or_else(|_| "your-api-token".to_string());
+            let username =
+                env::var("JIRA_USER").unwrap_or_else(|_| "your-email@example.com".to_string());
+            let api_token =
+                env::var("JIRA_API_TOKEN").unwrap_or_else(|_| "your-api-token".to_string());
 
             JiraConfig::new(
                 base_url,
@@ -61,9 +58,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(projects) => {
             println!("[OK] {} 個のプロジェクトが見つかりました:", projects.len());
             for (i, project) in projects.iter().take(5).enumerate() {
-                println!("   {}. {} - {} ({})", 
-                    i + 1, 
-                    project.key, 
+                println!(
+                    "   {}. {} - {} ({})",
+                    i + 1,
+                    project.key,
                     project.name,
                     project.project_type_key.as_deref().unwrap_or("unknown")
                 );
@@ -83,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_params = ProjectParams::new()
         .expand(vec!["lead".to_string(), "description".to_string()])
         .recent(3);
-    
+
     match client.get_projects_with_params(project_params).await {
         Ok(projects) => {
             println!("[OK] {} 個のプロジェクト（詳細情報付き）:", projects.len());
@@ -104,38 +102,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // チケット検索の例
     println!("\n[INFO] 最近のチケットを検索中...");
-    let search_params = SearchParams::new()
-        .max_results(5)
-        .fields(vec![
-            "key".to_string(),
-            "summary".to_string(),
-            "status".to_string(),
-            "assignee".to_string(),
-            "reporter".to_string(),
-            "created".to_string(),
-            "updated".to_string(),
-            "issuetype".to_string(),
-            "priority".to_string()
-        ]);
-    
-    match client.search_issues("order by created DESC", search_params).await {
+    let search_params = SearchParams::new().max_results(5).fields(vec![
+        "key".to_string(),
+        "summary".to_string(),
+        "status".to_string(),
+        "assignee".to_string(),
+        "reporter".to_string(),
+        "created".to_string(),
+        "updated".to_string(),
+        "issuetype".to_string(),
+        "priority".to_string(),
+    ]);
+
+    match client
+        .search_issues("order by created DESC", search_params)
+        .await
+    {
         Ok(search_result) => {
-            println!("[OK] 検索結果: {} 件中 {} 件を表示", 
-                search_result.total, 
+            println!(
+                "[OK] 検索結果: {} 件中 {} 件を表示",
+                search_result.total,
                 search_result.issues.len()
             );
-            
+
             for issue in &search_result.issues {
-                let assignee = issue.fields.assignee
+                let assignee = issue
+                    .fields
+                    .assignee
                     .as_ref()
                     .map(|a| a.display_name.as_str())
                     .unwrap_or("未割当");
-                    
-                println!("   {} - {} [{}] (担当: {})", 
-                    issue.key,
-                    issue.fields.summary,
-                    issue.fields.status.name,
-                    assignee
+
+                println!(
+                    "   {} - {} [{}] (担当: {})",
+                    issue.key, issue.fields.summary, issue.fields.status.name, assignee
                 );
             }
         }
@@ -151,29 +151,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(projects) if !projects.is_empty() => {
             let first_project = &projects[0];
             let jql = format!("project = {} ORDER BY created DESC", first_project.key);
-            let params = SearchParams::new()
-                .max_results(3)
-                .fields(vec![
-                    "key".to_string(),
-                    "summary".to_string(),
-                    "status".to_string(),
-                    "issuetype".to_string(),
-                    "reporter".to_string(),
-                    "created".to_string(),
-                    "updated".to_string()
-                ]);
-            
+            let params = SearchParams::new().max_results(3).fields(vec![
+                "key".to_string(),
+                "summary".to_string(),
+                "status".to_string(),
+                "issuetype".to_string(),
+                "reporter".to_string(),
+                "created".to_string(),
+                "updated".to_string(),
+            ]);
+
             match client.search_issues(&jql, params).await {
                 Ok(result) => {
-                    println!("[OK] プロジェクト {} の最新チケット {} 件:", 
-                        first_project.key, 
+                    println!(
+                        "[OK] プロジェクト {} の最新チケット {} 件:",
+                        first_project.key,
                         result.issues.len()
                     );
                     for issue in &result.issues {
-                        println!("   {} - {}", 
-                            issue.key, 
-                            issue.fields.summary
-                        );
+                        println!("   {} - {}", issue.key, issue.fields.summary);
                     }
                 }
                 Err(e) => {
@@ -190,6 +186,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n他のサンプル:");
     println!("   cargo run --example search_example");
     println!("   cargo run --example project_example");
-    
+
     Ok(())
 }

@@ -60,8 +60,11 @@ mod tests {
         });
 
         let user: User = serde_json::from_value(json_data).unwrap();
-        
-        assert_eq!(user.account_id, "557058:f58131cb-b67d-43c7-b30d-6b58d40bd077");
+
+        assert_eq!(
+            user.account_id,
+            "557058:f58131cb-b67d-43c7-b30d-6b58d40bd077"
+        );
         assert_eq!(user.display_name, "Test User");
         assert_eq!(user.email_address, Some("test@example.com".to_string()));
         assert_eq!(user.active, Some(true));

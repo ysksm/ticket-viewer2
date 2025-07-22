@@ -1,10 +1,10 @@
+use crate::{Error, Issue, JiraClient, SearchParams, TimeBasedFilter};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinSet;
-use crate::{JiraClient, SearchParams, TimeBasedFilter, Issue, Error};
 
 /// 同期サービスの設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,37 +35,37 @@ impl SyncConfig {
             excluded_fields: Vec::new(),
         }
     }
-    
+
     /// 同期間隔を設定
     pub fn interval_minutes(mut self, minutes: u32) -> Self {
         self.interval_minutes = minutes;
         self
     }
-    
+
     /// 最大履歴保持数を設定
     pub fn max_history_count(mut self, count: usize) -> Self {
         self.max_history_count = count;
         self
     }
-    
+
     /// 時間最適化を設定
     pub fn enable_time_optimization(mut self, enabled: bool) -> Self {
         self.enable_time_optimization = enabled;
         self
     }
-    
+
     /// 並行処理数を設定
     pub fn concurrent_sync_count(mut self, count: usize) -> Self {
         self.concurrent_sync_count = count;
         self
     }
-    
+
     /// 対象プロジェクトを設定
     pub fn target_projects(mut self, projects: Vec<String>) -> Self {
         self.target_projects = projects;
         self
     }
-    
+
     /// 除外フィールドを設定
     pub fn excluded_fields(mut self, fields: Vec<String>) -> Self {
         self.excluded_fields = fields;
@@ -121,24 +121,24 @@ impl SyncResult {
             is_success: false,
         }
     }
-    
+
     /// 同期終了を記録
     pub fn finish(&mut self) {
         self.end_time = Utc::now();
         self.is_success = self.error_count == 0;
     }
-    
+
     /// エラーを追加
     pub fn add_error(&mut self, message: String) {
         self.error_count += 1;
         self.error_messages.push(message);
     }
-    
+
     /// プロジェクト統計を追加
     pub fn add_project_stats(&mut self, project_key: String, stats: ProjectSyncStats) {
         self.project_stats.insert(project_key, stats);
     }
-    
+
     /// 同期処理時間を取得（秒）
     pub fn duration_seconds(&self) -> f64 {
         (self.end_time - self.start_time).num_milliseconds() as f64 / 1000.0
@@ -200,17 +200,17 @@ impl SyncState {
     pub fn is_syncing(&self) -> bool {
         matches!(self, SyncState::Syncing)
     }
-    
+
     /// エラー状態かどうか
     pub fn is_error(&self) -> bool {
         matches!(self, SyncState::Error(_))
     }
-    
+
     /// 完了状態かどうか
     pub fn is_completed(&self) -> bool {
         matches!(self, SyncState::Completed)
     }
-    
+
     /// アイドル状態かどうか
     pub fn is_idle(&self) -> bool {
         matches!(self, SyncState::Idle)
@@ -249,89 +249,89 @@ impl SyncService {
             last_successful_sync: Arc::new(Mutex::new(None)),
         }
     }
-    
+
     /// 現在の同期状態を取得
     pub async fn current_state(&self) -> SyncState {
         self.current_state.lock().await.clone()
     }
-    
+
     /// 設定を取得
     pub fn config(&self) -> &SyncConfig {
         &self.config
     }
-    
+
     /// 同期履歴を取得
     pub async fn sync_history(&self) -> Vec<SyncResult> {
         self.sync_history.lock().await.clone()
     }
-    
+
     /// 最後の成功した同期時刻を取得
     pub async fn last_successful_sync(&self) -> Option<DateTime<Utc>> {
         *self.last_successful_sync.lock().await
     }
-    
+
     /// 設定を更新
     pub fn update_config(&mut self, config: SyncConfig) {
         self.config = config;
     }
-    
+
     /// 同期状態を更新
     pub(crate) async fn set_state(&self, state: SyncState) {
         *self.current_state.lock().await = state;
     }
-    
+
     /// 同期状態を更新（テスト用公開メソッド）
     pub async fn set_state_for_test(&self, state: SyncState) {
         self.set_state(state).await;
     }
-    
+
     /// 同期結果を履歴に追加
     pub(crate) async fn add_sync_result(&self, result: SyncResult) {
         let mut history = self.sync_history.lock().await;
-        
+
         // 最大履歴数を超えた場合、古いものを削除
         if history.len() >= self.config.max_history_count {
             history.remove(0);
         }
-        
+
         // 成功した同期の場合、最終成功時刻を更新
         if result.is_success {
             *self.last_successful_sync.lock().await = Some(result.end_time);
         }
-        
+
         history.push(result);
     }
-    
+
     /// 同期結果を履歴に追加（テスト用公開メソッド）
     pub async fn add_sync_result_for_test(&self, result: SyncResult) {
         self.add_sync_result(result).await;
     }
-    
+
     /// 最新の同期結果を取得
     pub async fn latest_sync_result(&self) -> Option<SyncResult> {
         self.sync_history.lock().await.last().cloned()
     }
-    
+
     /// 同期が可能かどうかチェック
     pub async fn can_sync(&self) -> bool {
         !self.current_state.lock().await.is_syncing()
     }
-    
+
     /// 増分同期を実行（並行処理最適化版）
     pub async fn sync_incremental(
-        &self, 
+        &self,
         client: &JiraClient,
-        existing_issues: &[Issue]
+        existing_issues: &[Issue],
     ) -> Result<SyncResult, Error> {
         // 同期中でないことを確認
         if !self.can_sync().await {
             return Err(Error::InvalidInput("同期が既に実行中です".to_string()));
         }
-        
+
         // 同期開始
         self.set_state(SyncState::Syncing).await;
         let mut result = SyncResult::new();
-        
+
         // 最後の同期時刻以降のフィルターを作成
         let filter = if let Some(last_sync) = self.last_successful_sync().await {
             TimeBasedFilter::incremental_since(last_sync)
@@ -340,21 +340,21 @@ impl SyncService {
             // 初回同期の場合は最近24時間分を取得
             TimeBasedFilter::last_hours(24)
         };
-        
+
         // フィルター妥当性チェック
         if let Err(e) = filter.is_valid() {
             result.add_error(format!("フィルター設定エラー: {}", e));
             result.finish();
-            self.set_state(SyncState::Error(format!("フィルター設定エラー: {}", e))).await;
+            self.set_state(SyncState::Error(format!("フィルター設定エラー: {}", e)))
+                .await;
             self.add_sync_result(result.clone()).await;
             return Ok(result);
         }
-        
+
         // 既存Issueのキーセットを作成（重複除外用）
-        let existing_keys: HashSet<String> = existing_issues.iter()
-            .map(|i| i.key.clone())
-            .collect();
-        
+        let existing_keys: HashSet<String> =
+            existing_issues.iter().map(|i| i.key.clone()).collect();
+
         // プロジェクト別同期実行
         let projects_to_sync = if self.config.target_projects.is_empty() {
             // 全プロジェクト対象の場合、プロジェクト一覧を取得
@@ -363,7 +363,11 @@ impl SyncService {
                 Err(e) => {
                     result.add_error(format!("プロジェクト一覧取得エラー: {}", e));
                     result.finish();
-                    self.set_state(SyncState::Error(format!("プロジェクト一覧取得エラー: {}", e))).await;
+                    self.set_state(SyncState::Error(format!(
+                        "プロジェクト一覧取得エラー: {}",
+                        e
+                    )))
+                    .await;
                     self.add_sync_result(result.clone()).await;
                     return Ok(result);
                 }
@@ -371,11 +375,11 @@ impl SyncService {
         } else {
             self.config.target_projects.clone()
         };
-        
+
         // 並行処理で各プロジェクトを同期
         let (tx, mut rx) = mpsc::channel(projects_to_sync.len());
         let mut join_set = JoinSet::new();
-        
+
         for project_key in projects_to_sync {
             let client = client.clone();
             let config = self.config.clone();
@@ -383,24 +387,25 @@ impl SyncService {
             let existing_keys = existing_keys.clone();
             let tx = tx.clone();
             let semaphore = Arc::clone(&self.concurrency_limiter);
-            
+
             join_set.spawn(async move {
                 let _permit = semaphore.acquire().await.expect("セマフォ取得失敗");
-                
+
                 let sync_result = Self::sync_project_concurrent(
                     &client,
                     &config,
                     &project_key,
                     &filter,
-                    &existing_keys
-                ).await;
-                
+                    &existing_keys,
+                )
+                .await;
+
                 let _ = tx.send(sync_result).await;
             });
         }
-        
+
         drop(tx); // チャンネルを閉じる
-        
+
         // 全プロジェクトの同期結果を収集
         while let Some(project_stats) = rx.recv().await {
             match project_stats {
@@ -418,30 +423,30 @@ impl SyncService {
                 }
             }
         }
-        
+
         // すべてのタスクが完了するまで待機
         while join_set.join_next().await.is_some() {}
-        
+
         // 従来の逐次処理（フォールバック）
         /*
         for project_key in &projects_to_sync {
             let mut project_stats = ProjectSyncStats::new(project_key.clone());
-            
+
             // プロジェクト固有のJQLクエリを構築
             let base_jql = format!("project = {}", project_key);
             let time_condition = filter.to_jql_time_condition();
-            
+
             let jql = if let Some(time_cond) = time_condition {
                 format!("{} AND ({})", base_jql, time_cond)
             } else {
                 base_jql
             };
-            
+
             // 検索パラメータ設定
             let mut search_params = SearchParams::new()
                 .max_results(1000) // 大きめのページサイズで効率化
                 .start_at(0);
-            
+
             // 除外フィールドがある場合は、必要なフィールドのみを指定
             if !self.config.excluded_fields.is_empty() {
                 let default_fields = vec![
@@ -454,26 +459,26 @@ impl SyncService {
                     "created".to_string(),
                     "updated".to_string(),
                 ];
-                
+
                 let filtered_fields: Vec<String> = default_fields.into_iter()
                     .filter(|field| !self.config.excluded_fields.contains(field))
                     .collect();
-                    
+
                 search_params = search_params.fields(filtered_fields);
             }
-            
+
             // ページネーションで全Issues取得
             let mut start_at = 0u32;
             let max_results = 1000u32;
-            
+
             loop {
                 search_params = search_params.start_at(start_at).max_results(max_results);
-                
+
                 match client.search_issues(&jql, search_params.clone()).await {
                     Ok(search_result) => {
                         let mut new_issues = 0;
                         let mut updated_issues = 0;
-                        
+
                         for issue in &search_result.issues {
                             if existing_keys.contains(&issue.key) {
                                 // 既存Issueの場合は更新として扱う
@@ -483,22 +488,22 @@ impl SyncService {
                                 new_issues += 1;
                             }
                         }
-                        
+
                         // 統計更新
                         project_stats.synced_count += search_result.issues.len();
                         project_stats.new_count += new_issues;
                         project_stats.updated_count += updated_issues;
-                        
+
                         result.synced_issues_count += search_result.issues.len();
                         result.new_issues_count += new_issues;
                         result.updated_issues_count += updated_issues;
-                        
+
                         // 次のページがない場合は終了
-                        if (search_result.issues.len() as u32) < max_results || 
+                        if (search_result.issues.len() as u32) < max_results ||
                            start_at + (search_result.issues.len() as u32) >= search_result.total {
                             break;
                         }
-                        
+
                         start_at += max_results;
                     }
                     Err(e) => {
@@ -509,50 +514,54 @@ impl SyncService {
                     }
                 }
             }
-            
+
             project_stats.last_sync_time = Utc::now();
             result.add_project_stats(project_key.clone(), project_stats);
         }
         */
-        
+
         // 同期完了処理
         result.finish();
-        
+
         if result.is_success {
             self.set_state(SyncState::Completed).await;
         } else {
-            self.set_state(SyncState::Error(format!("同期中に {} 件のエラーが発生しました", result.error_count))).await;
+            self.set_state(SyncState::Error(format!(
+                "同期中に {} 件のエラーが発生しました",
+                result.error_count
+            )))
+            .await;
         }
-        
+
         self.add_sync_result(result.clone()).await;
         Ok(result)
     }
-    
+
     /// 初回同期を実行（全データを取得）
     pub async fn sync_full(&self, client: &JiraClient) -> Result<SyncResult, Error> {
         self.sync_incremental(client, &[]).await
     }
-    
+
     /// 重複除外処理を実行
     pub fn deduplicate_issues(&self, issues: Vec<Issue>) -> Vec<Issue> {
         let mut seen_keys = HashSet::new();
         let mut deduplicated = Vec::new();
-        
+
         for issue in issues {
             if seen_keys.insert(issue.key.clone()) {
                 deduplicated.push(issue);
             }
         }
-        
+
         deduplicated
     }
-    
+
     /// 同期の必要性をチェック
     pub async fn should_sync(&self) -> bool {
         if self.current_state().await.is_syncing() {
             return false;
         }
-        
+
         // 最後の成功した同期から設定された間隔が経過している場合
         if let Some(last_sync) = self.last_successful_sync().await {
             let now = Utc::now();
@@ -563,39 +572,39 @@ impl SyncService {
             true
         }
     }
-    
+
     /// エラーからの復旧を試行
     pub async fn recover_from_error(&self) {
         if self.current_state().await.is_error() {
             self.set_state(SyncState::Idle).await;
         }
     }
-    
+
     /// プロジェクト単位の並行同期処理
     async fn sync_project_concurrent(
         client: &JiraClient,
         config: &SyncConfig,
         project_key: &str,
         filter: &TimeBasedFilter,
-        existing_keys: &HashSet<String>
+        existing_keys: &HashSet<String>,
     ) -> Result<(String, ProjectSyncStats, usize, usize, usize), (String, String)> {
         let mut project_stats = ProjectSyncStats::new(project_key.to_string());
-        
+
         // プロジェクト固有のJQLクエリを構築
         let base_jql = format!("project = {}", project_key);
         let time_condition = filter.to_jql_time_condition();
-        
+
         let jql = if let Some(time_cond) = time_condition {
             format!("{} AND ({})", base_jql, time_cond)
         } else {
             base_jql
         };
-        
+
         // 検索パラメータ設定
         let mut search_params = SearchParams::new()
             .max_results(1000) // 大きめのページサイズで効率化
             .start_at(0);
-        
+
         // 除外フィールドがある場合は、必要なフィールドのみを指定
         if !config.excluded_fields.is_empty() {
             let default_fields = vec![
@@ -608,29 +617,30 @@ impl SyncService {
                 "created".to_string(),
                 "updated".to_string(),
             ];
-            
-            let filtered_fields: Vec<String> = default_fields.into_iter()
+
+            let filtered_fields: Vec<String> = default_fields
+                .into_iter()
                 .filter(|field| !config.excluded_fields.contains(field))
                 .collect();
-                
+
             search_params = search_params.fields(filtered_fields);
         }
-        
+
         // ページネーションで全Issues取得
         let mut start_at = 0u32;
         let max_results = 1000u32;
         let mut total_synced = 0;
         let mut total_new = 0;
         let mut total_updated = 0;
-        
+
         loop {
             search_params = search_params.start_at(start_at).max_results(max_results);
-            
+
             match client.search_issues(&jql, search_params.clone()).await {
                 Ok(search_result) => {
                     let mut new_issues = 0;
                     let mut updated_issues = 0;
-                    
+
                     for issue in &search_result.issues {
                         if existing_keys.contains(&issue.key) {
                             updated_issues += 1;
@@ -638,22 +648,23 @@ impl SyncService {
                             new_issues += 1;
                         }
                     }
-                    
+
                     // 統計更新
                     project_stats.synced_count += search_result.issues.len();
                     project_stats.new_count += new_issues;
                     project_stats.updated_count += updated_issues;
-                    
+
                     total_synced += search_result.issues.len();
                     total_new += new_issues;
                     total_updated += updated_issues;
-                    
+
                     // 次のページがない場合は終了
-                    if (search_result.issues.len() as u32) < max_results || 
-                       start_at + (search_result.issues.len() as u32) >= search_result.total {
+                    if (search_result.issues.len() as u32) < max_results
+                        || start_at + (search_result.issues.len() as u32) >= search_result.total
+                    {
                         break;
                     }
-                    
+
                     start_at += max_results;
                 }
                 Err(e) => {
@@ -662,31 +673,31 @@ impl SyncService {
                 }
             }
         }
-        
+
         project_stats.last_sync_time = Utc::now();
-        Ok((project_key.to_string(), project_stats, total_synced, total_new, total_updated))
+        Ok((
+            project_key.to_string(),
+            project_stats,
+            total_synced,
+            total_new,
+            total_updated,
+        ))
     }
 
     /// 統計情報を取得
     pub async fn get_stats(&self) -> SyncServiceStats {
         let history = self.sync_history.lock().await;
         let total_syncs = history.len();
-        let successful_syncs = history.iter()
-            .filter(|r| r.is_success)
-            .count();
-        
-        let total_issues_synced = history.iter()
-            .map(|r| r.synced_issues_count)
-            .sum();
-            
+        let successful_syncs = history.iter().filter(|r| r.is_success).count();
+
+        let total_issues_synced = history.iter().map(|r| r.synced_issues_count).sum();
+
         let average_duration = if !history.is_empty() {
-            history.iter()
-                .map(|r| r.duration_seconds())
-                .sum::<f64>() / history.len() as f64
+            history.iter().map(|r| r.duration_seconds()).sum::<f64>() / history.len() as f64
         } else {
             0.0
         };
-        
+
         SyncServiceStats {
             total_syncs,
             successful_syncs,
@@ -718,12 +729,12 @@ pub struct SyncServiceStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_sync_config_new() {
         // SyncConfig::new()でデフォルト設定が作成されることをテスト
         let config = SyncConfig::new();
-        
+
         assert_eq!(config.interval_minutes, 60);
         assert_eq!(config.max_history_count, 100);
         assert_eq!(config.enable_time_optimization, true);
@@ -731,7 +742,7 @@ mod tests {
         assert!(config.target_projects.is_empty());
         assert!(config.excluded_fields.is_empty());
     }
-    
+
     #[test]
     fn test_sync_config_builder_pattern() {
         // SyncConfigのビルダーパターンが正しく動作することをテスト
@@ -742,7 +753,7 @@ mod tests {
             .concurrent_sync_count(5)
             .target_projects(vec!["TEST".to_string(), "DEMO".to_string()])
             .excluded_fields(vec!["description".to_string()]);
-            
+
         assert_eq!(config.interval_minutes, 30);
         assert_eq!(config.max_history_count, 50);
         assert_eq!(config.enable_time_optimization, false);
@@ -750,12 +761,12 @@ mod tests {
         assert_eq!(config.target_projects, vec!["TEST", "DEMO"]);
         assert_eq!(config.excluded_fields, vec!["description"]);
     }
-    
+
     #[test]
     fn test_sync_result_new() {
         // SyncResult::new()で初期状態が正しく設定されることをテスト
         let result = SyncResult::new();
-        
+
         assert_eq!(result.synced_issues_count, 0);
         assert_eq!(result.new_issues_count, 0);
         assert_eq!(result.updated_issues_count, 0);
@@ -765,42 +776,42 @@ mod tests {
         assert!(result.error_messages.is_empty());
         assert_eq!(result.is_success, false);
     }
-    
+
     #[test]
     fn test_sync_result_add_error() {
         // SyncResult::add_error()でエラーが正しく追加されることをテスト
         let mut result = SyncResult::new();
-        
+
         result.add_error("Test error 1".to_string());
         result.add_error("Test error 2".to_string());
-        
+
         assert_eq!(result.error_count, 2);
         assert_eq!(result.error_messages.len(), 2);
         assert_eq!(result.error_messages[0], "Test error 1");
         assert_eq!(result.error_messages[1], "Test error 2");
     }
-    
+
     #[test]
     fn test_sync_result_finish() {
         // SyncResult::finish()で終了処理が正しく行われることをテスト
         let mut result = SyncResult::new();
         let start_time = result.start_time;
-        
+
         // 時刻の更新を確実にするため少し待機
         std::thread::sleep(std::time::Duration::from_millis(10));
-        
+
         // エラーなしで完了
         result.finish();
         assert!(result.end_time > start_time);
         assert_eq!(result.is_success, true);
-        
+
         // エラーありで完了
         let mut result_with_error = SyncResult::new();
         result_with_error.add_error("Test error".to_string());
         result_with_error.finish();
         assert_eq!(result_with_error.is_success, false);
     }
-    
+
     #[test]
     fn test_sync_state_methods() {
         // SyncStateの各判定メソッドが正しく動作することをテスト
@@ -809,91 +820,91 @@ mod tests {
         assert!(!idle.is_syncing());
         assert!(!idle.is_completed());
         assert!(!idle.is_error());
-        
+
         let syncing = SyncState::Syncing;
         assert!(syncing.is_syncing());
         assert!(!syncing.is_idle());
-        
+
         let completed = SyncState::Completed;
         assert!(completed.is_completed());
         assert!(!syncing.is_completed());
-        
+
         let error = SyncState::Error("Test error".to_string());
         assert!(error.is_error());
         assert!(!error.is_idle());
     }
-    
+
     #[test]
     fn test_project_sync_stats_new() {
         // ProjectSyncStats::new()で初期値が正しく設定されることをテスト
         let stats = ProjectSyncStats::new("TEST".to_string());
-        
+
         assert_eq!(stats.project_key, "TEST");
         assert_eq!(stats.synced_count, 0);
         assert_eq!(stats.new_count, 0);
         assert_eq!(stats.updated_count, 0);
         assert_eq!(stats.error_count, 0);
     }
-    
+
     #[tokio::test]
     async fn test_sync_service_new() {
         // SyncService::new()で初期状態が正しく設定されることをテスト
         let config = SyncConfig::new();
         let service = SyncService::new(config);
-        
+
         assert!(service.current_state().await.is_idle());
         assert!(service.sync_history().await.is_empty());
         assert!(service.last_successful_sync().await.is_none());
         assert!(service.can_sync().await);
     }
-    
+
     #[tokio::test]
     async fn test_sync_service_state_management() {
         // SyncServiceの状態管理が正しく動作することをテスト
         let config = SyncConfig::new();
         let service = SyncService::new(config);
-        
+
         // 初期状態
         assert!(service.can_sync().await);
-        
+
         // 同期開始
         service.set_state(SyncState::Syncing).await;
         assert!(service.current_state().await.is_syncing());
         assert!(!service.can_sync().await);
-        
+
         // 同期完了
         service.set_state(SyncState::Completed).await;
         assert!(service.current_state().await.is_completed());
         assert!(service.can_sync().await);
     }
-    
+
     #[tokio::test]
     async fn test_sync_service_history_management() {
         // SyncServiceの履歴管理が正しく動作することをテスト
         let config = SyncConfig::new().max_history_count(2);
         let service = SyncService::new(config);
-        
+
         // 履歴追加
         let mut result1 = SyncResult::new();
         result1.synced_issues_count = 10;
         result1.finish(); // エラーなしで完了
-        
+
         let mut result2 = SyncResult::new();
         result2.synced_issues_count = 20;
         result2.add_error("Test error".to_string());
         result2.finish(); // エラーありで完了
-        
+
         let mut result3 = SyncResult::new();
         result3.synced_issues_count = 30;
         result3.finish(); // エラーなしで完了
-        
+
         service.add_sync_result(result1).await;
         assert_eq!(service.sync_history().await.len(), 1);
         assert!(service.last_successful_sync().await.is_some());
-        
+
         service.add_sync_result(result2).await;
         assert_eq!(service.sync_history().await.len(), 2);
-        
+
         // 最大履歴数を超えると古いものが削除される
         service.add_sync_result(result3).await;
         let history = service.sync_history().await;
@@ -901,27 +912,27 @@ mod tests {
         assert_eq!(history[0].synced_issues_count, 20); // 最初の履歴が削除された
         assert_eq!(history[1].synced_issues_count, 30);
     }
-    
+
     #[tokio::test]
     async fn test_sync_service_stats() {
         // SyncServiceの統計情報が正しく計算されることをテスト
         let config = SyncConfig::new();
         let service = SyncService::new(config);
-        
+
         // 成功した同期を追加
         let mut success_result = SyncResult::new();
         success_result.synced_issues_count = 100;
         success_result.finish();
-        
+
         // 失敗した同期を追加
         let mut failure_result = SyncResult::new();
         failure_result.synced_issues_count = 50;
         failure_result.add_error("Test error".to_string());
         failure_result.finish();
-        
+
         service.add_sync_result(success_result).await;
         service.add_sync_result(failure_result).await;
-        
+
         let stats = service.get_stats().await;
         assert_eq!(stats.total_syncs, 2);
         assert_eq!(stats.successful_syncs, 1);
@@ -930,72 +941,75 @@ mod tests {
         assert!(stats.last_sync_time.is_some());
         assert!(stats.last_successful_sync_time.is_some());
     }
-    
+
     #[test]
     fn test_sync_result_duration_calculation() {
         // SyncResultの処理時間計算が正しく動作することをテスト
         let mut result = SyncResult::new();
         let start_time = result.start_time;
-        
+
         // 1秒後に終了したと仮定
         result.end_time = start_time + chrono::Duration::seconds(1);
-        
+
         let duration = result.duration_seconds();
         assert!((duration - 1.0).abs() < 0.1); // 約1秒
     }
-    
+
     #[tokio::test]
     async fn test_sync_service_should_sync() {
         // SyncService::should_sync()が正しく動作することをテスト
         let config = SyncConfig::new().interval_minutes(60);
         let service = SyncService::new(config);
-        
+
         // 初回同期の場合は常にtrue
         assert!(service.should_sync().await);
-        
+
         // 同期中の場合はfalse
         service.set_state(SyncState::Syncing).await;
         assert!(!service.should_sync().await);
-        
+
         // 最後の同期から十分時間が経過している場合はtrue
         service.set_state(SyncState::Idle).await;
         *service.last_successful_sync.lock().await = Some(Utc::now() - chrono::Duration::hours(2));
         assert!(service.should_sync().await);
-        
+
         // 最近同期した場合はfalse
-        *service.last_successful_sync.lock().await = Some(Utc::now() - chrono::Duration::minutes(30));
+        *service.last_successful_sync.lock().await =
+            Some(Utc::now() - chrono::Duration::minutes(30));
         assert!(!service.should_sync().await);
     }
-    
+
     #[tokio::test]
     async fn test_sync_service_recover_from_error() {
         // SyncService::recover_from_error()が正しく動作することをテスト
         let config = SyncConfig::new();
         let service = SyncService::new(config);
-        
+
         // エラー状態に設定
-        service.set_state(SyncState::Error("Test error".to_string())).await;
+        service
+            .set_state(SyncState::Error("Test error".to_string()))
+            .await;
         assert!(service.current_state().await.is_error());
-        
+
         // エラーからの復旧
         service.recover_from_error().await;
         assert!(service.current_state().await.is_idle());
-        
+
         // アイドル状態では何もしない
         service.recover_from_error().await;
         assert!(service.current_state().await.is_idle());
     }
-    
+
     #[test]
     fn test_sync_service_deduplicate_issues() {
         // SyncService::deduplicate_issues()が正しく動作することをテスト
         let config = SyncConfig::new();
         let service = SyncService::new(config);
-        
+
         // 簡単なテスト用データを作成（実際のIssue構造体の複雑性を避けるため、空のVecでテスト）
         let issues = Vec::new(); // 空のIssueリスト
         let deduplicated = service.deduplicate_issues(issues);
-        
+
         assert_eq!(deduplicated.len(), 0);
     }
 }

@@ -1,7 +1,7 @@
+use crate::{DateRange, Error};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::{DateRange, Error};
 
 /// 課題の変更履歴レコード
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -181,20 +181,18 @@ impl IssueHistory {
 
     /// 変更の概要を文字列で取得
     pub fn change_summary(&self) -> String {
-        let author_name = self.author
+        let author_name = self
+            .author
             .as_ref()
             .map(|a| a.display_name.as_str())
             .unwrap_or("System");
-            
-        let from = self.from_display_value
-            .as_deref()
-            .unwrap_or("None");
-            
-        let to = self.to_display_value
-            .as_deref()
-            .unwrap_or("None");
 
-        format!("{}: {} changed {} from '{}' to '{}'",
+        let from = self.from_display_value.as_deref().unwrap_or("None");
+
+        let to = self.to_display_value.as_deref().unwrap_or("None");
+
+        format!(
+            "{}: {} changed {} from '{}' to '{}'",
             self.change_timestamp.format("%Y-%m-%d %H:%M:%S"),
             author_name,
             self.field_name,
@@ -304,12 +302,10 @@ impl HistoryStats {
     /// 統計情報を更新
     pub fn update(&mut self, histories: &[IssueHistory]) {
         self.total_changes = histories.len();
-        
+
         // ユニークな課題数
-        let unique_issues: std::collections::HashSet<&String> = histories
-            .iter()
-            .map(|h| &h.issue_key)
-            .collect();
+        let unique_issues: std::collections::HashSet<&String> =
+            histories.iter().map(|h| &h.issue_key).collect();
         self.unique_issues = unique_issues.len();
 
         // ユニークな変更者数
@@ -322,21 +318,16 @@ impl HistoryStats {
         // フィールド別変更数
         self.field_change_counts.clear();
         for history in histories {
-            *self.field_change_counts
+            *self
+                .field_change_counts
                 .entry(history.field_name.clone())
                 .or_insert(0) += 1;
         }
 
         // 最古・最新の変更日時
         if !histories.is_empty() {
-            self.oldest_change = histories
-                .iter()
-                .map(|h| h.change_timestamp)
-                .min();
-            self.newest_change = histories
-                .iter()
-                .map(|h| h.change_timestamp)
-                .max();
+            self.oldest_change = histories.iter().map(|h| h.change_timestamp).min();
+            self.newest_change = histories.iter().map(|h| h.change_timestamp).max();
         }
     }
 }
@@ -376,7 +367,8 @@ mod tests {
             "change_1".to_string(),
             Utc::now(),
             "assignee".to_string(),
-        ).with_author(author.clone());
+        )
+        .with_author(author.clone());
 
         assert!(history.author.is_some());
         assert_eq!(history.author.as_ref().unwrap().account_id, "user123");
@@ -398,39 +390,55 @@ mod tests {
     #[test]
     fn test_change_type_detection() {
         let status_history = IssueHistory::new(
-            "1".to_string(), "TEST-1".to_string(), "c1".to_string(),
-            Utc::now(), "status".to_string()
+            "1".to_string(),
+            "TEST-1".to_string(),
+            "c1".to_string(),
+            Utc::now(),
+            "status".to_string(),
         );
         assert_eq!(status_history.change_type(), ChangeType::StatusChange);
 
         let custom_history = IssueHistory::new(
-            "1".to_string(), "TEST-1".to_string(), "c2".to_string(),
-            Utc::now(), "customfield_10001".to_string()
-        ).with_field_id("customfield_10001".to_string());
+            "1".to_string(),
+            "TEST-1".to_string(),
+            "c2".to_string(),
+            Utc::now(),
+            "customfield_10001".to_string(),
+        )
+        .with_field_id("customfield_10001".to_string());
         assert_eq!(custom_history.change_type(), ChangeType::CustomField);
     }
 
     #[test]
     fn test_history_stats() {
         let mut stats = HistoryStats::new();
-        
+
         let histories = vec![
             IssueHistory::new(
-                "1".to_string(), "TEST-1".to_string(), "c1".to_string(),
-                Utc::now(), "status".to_string()
+                "1".to_string(),
+                "TEST-1".to_string(),
+                "c1".to_string(),
+                Utc::now(),
+                "status".to_string(),
             ),
             IssueHistory::new(
-                "2".to_string(), "TEST-2".to_string(), "c2".to_string(),
-                Utc::now(), "status".to_string()
+                "2".to_string(),
+                "TEST-2".to_string(),
+                "c2".to_string(),
+                Utc::now(),
+                "status".to_string(),
             ),
             IssueHistory::new(
-                "1".to_string(), "TEST-1".to_string(), "c3".to_string(),
-                Utc::now(), "assignee".to_string()
+                "1".to_string(),
+                "TEST-1".to_string(),
+                "c3".to_string(),
+                Utc::now(),
+                "assignee".to_string(),
             ),
         ];
 
         stats.update(&histories);
-        
+
         assert_eq!(stats.total_changes, 3);
         assert_eq!(stats.unique_issues, 2); // TEST-1, TEST-2
         assert_eq!(stats.field_change_counts.get("status"), Some(&2));

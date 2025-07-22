@@ -17,19 +17,15 @@ pub use models::*;
 
 // Sync module re-exports
 pub use sync::{
-    SyncConfig, SyncResult, SyncService, SyncState, SyncServiceStats, 
-    ProjectSyncStats
+    ProjectSyncStats, SyncConfig, SyncResult, SyncService, SyncServiceStats, SyncState,
 };
 
-// Time filter module re-exports  
-pub use time_filter::{
-    TimeBasedFilter, TimeChunk, parse_jira_datetime
-};
+// Time filter module re-exports
+pub use time_filter::{TimeBasedFilter, TimeChunk, parse_jira_datetime};
 
 // Persistence module re-exports
 pub use persistence::{
-    PersistenceStore, IssueFilter, DateRange, SortOrder, 
-    StorageStats, FilterConfig
+    DateRange, FilterConfig, IssueFilter, PersistenceStore, SortOrder, StorageStats,
 };
 
 // JSON store re-export
@@ -39,12 +35,11 @@ pub use json_store::JsonStore;
 pub use duckdb_store::DuckDBStore;
 
 // Config store re-exports
-pub use config_store::{ConfigStore, FileConfigStore, AppConfig};
+pub use config_store::{AppConfig, ConfigStore, FileConfigStore};
 
 // History re-exports
 pub use history::{
-    IssueHistory, HistoryAuthor, HistoryFilter, HistoryStats,
-    ChangeType, HistorySortOrder
+    ChangeType, HistoryAuthor, HistoryFilter, HistorySortOrder, HistoryStats, IssueHistory,
 };
 
 // Changelog parser re-export
@@ -52,7 +47,6 @@ pub use changelog_parser::ChangelogParser;
 
 // Memory management re-exports
 pub use memory::{
-    MemoryConfig, LazyIssue, DetailStatus, IssueLoader,
-    IssueStream, IssueStreamLoader, MemoryPool, PooledObject, 
-    PoolStats, MemoryGC, MemoryPoolGC
+    DetailStatus, IssueLoader, IssueStream, IssueStreamLoader, LazyIssue, MemoryConfig, MemoryGC,
+    MemoryPool, MemoryPoolGC, PoolStats, PooledObject,
 };

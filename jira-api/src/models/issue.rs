@@ -17,7 +17,7 @@ pub struct Issue {
 pub struct IssueFields {
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<serde_json::Value>,  // 文字列またはADF形式のオブジェクト
+    pub description: Option<serde_json::Value>, // 文字列またはADF形式のオブジェクト
     #[serde(rename = "issuetype")]
     pub issue_type: IssueType,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -33,7 +33,7 @@ pub struct IssueFields {
     pub resolution_date: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<Project>,
-    
+
     // カスタムフィールドは動的に追加
     #[serde(flatten)]
     pub custom_fields: HashMap<String, serde_json::Value>,
@@ -75,7 +75,7 @@ pub struct HistoryItem {
 }
 
 // Re-export dependent types that will be defined in other modules
-use super::{IssueType, Priority, Status, User, Project};
+use super::{IssueType, Priority, Project, Status, User};
 
 #[cfg(test)]
 mod tests {
@@ -127,11 +127,19 @@ mod tests {
         });
 
         let issue: Issue = serde_json::from_value(json_data).unwrap();
-        
+
         assert_eq!(issue.id, "10000");
         assert_eq!(issue.key, "TEST-1");
         assert_eq!(issue.fields.summary, "Test Issue");
-        assert_eq!(issue.fields.description, Some(serde_json::Value::String("This is a test issue".to_string())));
-        assert_eq!(issue.fields.custom_fields.get("customfield_10001").unwrap(), "Custom Value");
+        assert_eq!(
+            issue.fields.description,
+            Some(serde_json::Value::String(
+                "This is a test issue".to_string()
+            ))
+        );
+        assert_eq!(
+            issue.fields.custom_fields.get("customfield_10001").unwrap(),
+            "Custom Value"
+        );
     }
 }

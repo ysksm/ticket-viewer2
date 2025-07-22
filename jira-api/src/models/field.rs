@@ -60,7 +60,7 @@ mod tests {
         });
 
         let field: Field = serde_json::from_value(json_data).unwrap();
-        
+
         assert_eq!(field.id, "customfield_10001");
         assert_eq!(field.name, "Story Points");
         assert_eq!(field.custom, Some(true));
