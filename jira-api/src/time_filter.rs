@@ -318,7 +318,7 @@ fn format_jira_datetime(dt: &DateTime<Utc>) -> String {
     dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
-/// JIRA用の日時文字列をDateTime<Utc>にパース
+/// JIRA用の日時文字列を`DateTime<Utc>`にパース
 pub fn parse_jira_datetime(s: &str) -> Result<DateTime<Utc>, chrono::ParseError> {
     let naive_dt = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M")?;
     Ok(naive_dt.and_utc())
