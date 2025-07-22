@@ -5,6 +5,7 @@ pub mod duckdb_store;
 pub mod error;
 pub mod history;
 pub mod json_store;
+pub mod memory;
 pub mod models;
 pub mod persistence;
 pub mod sync;
@@ -48,3 +49,10 @@ pub use history::{
 
 // Changelog parser re-export
 pub use changelog_parser::ChangelogParser;
+
+// Memory management re-exports
+pub use memory::{
+    MemoryConfig, LazyIssue, DetailStatus, IssueLoader,
+    IssueStream, IssueStreamLoader, MemoryPool, PooledObject, 
+    PoolStats, MemoryGC, MemoryPoolGC
+};

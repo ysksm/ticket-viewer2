@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     // 3. 同期サービス初期化
     println!("\n=== 3. 同期サービス初期化 ===");
-    let mut sync_service = SyncService::new(sync_config.clone());
+    let sync_service = SyncService::new(sync_config.clone());
     println!("同期サービスを初期化しました");
     
     // 4. JIRAからIssueデータを取得（expand=changelogを使用）

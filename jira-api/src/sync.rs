@@ -1,6 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio::task::JoinSet;
 use crate::{JiraClient, SearchParams, TimeBasedFilter, Issue, Error};
 
 /// 同期サービスの設定
@@ -225,27 +228,31 @@ pub struct SyncService {
     /// 設定
     config: SyncConfig,
     /// 現在の同期状態
-    current_state: SyncState,
+    current_state: Arc<Mutex<SyncState>>,
     /// 同期履歴
-    sync_history: Vec<SyncResult>,
+    sync_history: Arc<Mutex<Vec<SyncResult>>>,
     /// 最後の成功した同期時刻
-    last_successful_sync: Option<DateTime<Utc>>,
+    last_successful_sync: Arc<Mutex<Option<DateTime<Utc>>>>,
+    /// 並行処理制御用セマフォ
+    concurrency_limiter: Arc<Semaphore>,
 }
 
 impl SyncService {
     /// 新しい同期サービスを作成
     pub fn new(config: SyncConfig) -> Self {
+        let concurrency_limit = config.concurrent_sync_count.max(1);
         Self {
+            concurrency_limiter: Arc::new(Semaphore::new(concurrency_limit)),
             config,
-            current_state: SyncState::Idle,
-            sync_history: Vec::new(),
-            last_successful_sync: None,
+            current_state: Arc::new(Mutex::new(SyncState::Idle)),
+            sync_history: Arc::new(Mutex::new(Vec::new())),
+            last_successful_sync: Arc::new(Mutex::new(None)),
         }
     }
     
     /// 現在の同期状態を取得
-    pub fn current_state(&self) -> &SyncState {
-        &self.current_state
+    pub async fn current_state(&self) -> SyncState {
+        self.current_state.lock().await.clone()
     }
     
     /// 設定を取得
@@ -254,13 +261,13 @@ impl SyncService {
     }
     
     /// 同期履歴を取得
-    pub fn sync_history(&self) -> &[SyncResult] {
-        &self.sync_history
+    pub async fn sync_history(&self) -> Vec<SyncResult> {
+        self.sync_history.lock().await.clone()
     }
     
     /// 最後の成功した同期時刻を取得
-    pub fn last_successful_sync(&self) -> Option<DateTime<Utc>> {
-        self.last_successful_sync
+    pub async fn last_successful_sync(&self) -> Option<DateTime<Utc>> {
+        *self.last_successful_sync.lock().await
     }
     
     /// 設定を更新
@@ -269,52 +276,64 @@ impl SyncService {
     }
     
     /// 同期状態を更新
-    pub(crate) fn set_state(&mut self, state: SyncState) {
-        self.current_state = state;
+    pub(crate) async fn set_state(&self, state: SyncState) {
+        *self.current_state.lock().await = state;
+    }
+    
+    /// 同期状態を更新（テスト用公開メソッド）
+    pub async fn set_state_for_test(&self, state: SyncState) {
+        self.set_state(state).await;
     }
     
     /// 同期結果を履歴に追加
-    pub(crate) fn add_sync_result(&mut self, result: SyncResult) {
+    pub(crate) async fn add_sync_result(&self, result: SyncResult) {
+        let mut history = self.sync_history.lock().await;
+        
         // 最大履歴数を超えた場合、古いものを削除
-        if self.sync_history.len() >= self.config.max_history_count {
-            self.sync_history.remove(0);
+        if history.len() >= self.config.max_history_count {
+            history.remove(0);
         }
         
         // 成功した同期の場合、最終成功時刻を更新
         if result.is_success {
-            self.last_successful_sync = Some(result.end_time);
+            *self.last_successful_sync.lock().await = Some(result.end_time);
         }
         
-        self.sync_history.push(result);
+        history.push(result);
+    }
+    
+    /// 同期結果を履歴に追加（テスト用公開メソッド）
+    pub async fn add_sync_result_for_test(&self, result: SyncResult) {
+        self.add_sync_result(result).await;
     }
     
     /// 最新の同期結果を取得
-    pub fn latest_sync_result(&self) -> Option<&SyncResult> {
-        self.sync_history.last()
+    pub async fn latest_sync_result(&self) -> Option<SyncResult> {
+        self.sync_history.lock().await.last().cloned()
     }
     
     /// 同期が可能かどうかチェック
-    pub fn can_sync(&self) -> bool {
-        !self.current_state.is_syncing()
+    pub async fn can_sync(&self) -> bool {
+        !self.current_state.lock().await.is_syncing()
     }
     
-    /// 増分同期を実行
+    /// 増分同期を実行（並行処理最適化版）
     pub async fn sync_incremental(
-        &mut self, 
+        &self, 
         client: &JiraClient,
         existing_issues: &[Issue]
     ) -> Result<SyncResult, Error> {
         // 同期中でないことを確認
-        if !self.can_sync() {
+        if !self.can_sync().await {
             return Err(Error::InvalidInput("同期が既に実行中です".to_string()));
         }
         
         // 同期開始
-        self.set_state(SyncState::Syncing);
+        self.set_state(SyncState::Syncing).await;
         let mut result = SyncResult::new();
         
         // 最後の同期時刻以降のフィルターを作成
-        let filter = if let Some(last_sync) = self.last_successful_sync {
+        let filter = if let Some(last_sync) = self.last_successful_sync().await {
             TimeBasedFilter::incremental_since(last_sync)
                 .excluded_issue_keys(existing_issues.iter().map(|i| i.key.clone()).collect())
         } else {
@@ -326,8 +345,8 @@ impl SyncService {
         if let Err(e) = filter.is_valid() {
             result.add_error(format!("フィルター設定エラー: {}", e));
             result.finish();
-            self.set_state(SyncState::Error(format!("フィルター設定エラー: {}", e)));
-            self.add_sync_result(result.clone());
+            self.set_state(SyncState::Error(format!("フィルター設定エラー: {}", e))).await;
+            self.add_sync_result(result.clone()).await;
             return Ok(result);
         }
         
@@ -344,8 +363,8 @@ impl SyncService {
                 Err(e) => {
                     result.add_error(format!("プロジェクト一覧取得エラー: {}", e));
                     result.finish();
-                    self.set_state(SyncState::Error(format!("プロジェクト一覧取得エラー: {}", e)));
-                    self.add_sync_result(result.clone());
+                    self.set_state(SyncState::Error(format!("プロジェクト一覧取得エラー: {}", e))).await;
+                    self.add_sync_result(result.clone()).await;
                     return Ok(result);
                 }
             }
@@ -353,7 +372,58 @@ impl SyncService {
             self.config.target_projects.clone()
         };
         
-        // 各プロジェクトを同期
+        // 並行処理で各プロジェクトを同期
+        let (tx, mut rx) = mpsc::channel(projects_to_sync.len());
+        let mut join_set = JoinSet::new();
+        
+        for project_key in projects_to_sync {
+            let client = client.clone();
+            let config = self.config.clone();
+            let filter = filter.clone();
+            let existing_keys = existing_keys.clone();
+            let tx = tx.clone();
+            let semaphore = Arc::clone(&self.concurrency_limiter);
+            
+            join_set.spawn(async move {
+                let _permit = semaphore.acquire().await.expect("セマフォ取得失敗");
+                
+                let sync_result = Self::sync_project_concurrent(
+                    &client,
+                    &config,
+                    &project_key,
+                    &filter,
+                    &existing_keys
+                ).await;
+                
+                let _ = tx.send(sync_result).await;
+            });
+        }
+        
+        drop(tx); // チャンネルを閉じる
+        
+        // 全プロジェクトの同期結果を収集
+        while let Some(project_stats) = rx.recv().await {
+            match project_stats {
+                Ok((project_key, stats, synced_count, new_count, updated_count)) => {
+                    result.synced_issues_count += synced_count;
+                    result.new_issues_count += new_count;
+                    result.updated_issues_count += updated_count;
+                    result.add_project_stats(project_key, stats);
+                }
+                Err((project_key, error_msg)) => {
+                    result.add_error(error_msg);
+                    let mut error_stats = ProjectSyncStats::new(project_key.clone());
+                    error_stats.error_count = 1;
+                    result.add_project_stats(project_key, error_stats);
+                }
+            }
+        }
+        
+        // すべてのタスクが完了するまで待機
+        while join_set.join_next().await.is_some() {}
+        
+        // 従来の逐次処理（フォールバック）
+        /*
         for project_key in &projects_to_sync {
             let mut project_stats = ProjectSyncStats::new(project_key.clone());
             
@@ -443,22 +513,23 @@ impl SyncService {
             project_stats.last_sync_time = Utc::now();
             result.add_project_stats(project_key.clone(), project_stats);
         }
+        */
         
         // 同期完了処理
         result.finish();
         
         if result.is_success {
-            self.set_state(SyncState::Completed);
+            self.set_state(SyncState::Completed).await;
         } else {
-            self.set_state(SyncState::Error(format!("同期中に {} 件のエラーが発生しました", result.error_count)));
+            self.set_state(SyncState::Error(format!("同期中に {} 件のエラーが発生しました", result.error_count))).await;
         }
         
-        self.add_sync_result(result.clone());
+        self.add_sync_result(result.clone()).await;
         Ok(result)
     }
     
     /// 初回同期を実行（全データを取得）
-    pub async fn sync_full(&mut self, client: &JiraClient) -> Result<SyncResult, Error> {
+    pub async fn sync_full(&self, client: &JiraClient) -> Result<SyncResult, Error> {
         self.sync_incremental(client, &[]).await
     }
     
@@ -477,13 +548,13 @@ impl SyncService {
     }
     
     /// 同期の必要性をチェック
-    pub fn should_sync(&self) -> bool {
-        if self.current_state.is_syncing() {
+    pub async fn should_sync(&self) -> bool {
+        if self.current_state().await.is_syncing() {
             return false;
         }
         
         // 最後の成功した同期から設定された間隔が経過している場合
-        if let Some(last_sync) = self.last_successful_sync {
+        if let Some(last_sync) = self.last_successful_sync().await {
             let now = Utc::now();
             let elapsed_minutes = (now - last_sync).num_minutes();
             elapsed_minutes >= self.config.interval_minutes as i64
@@ -494,27 +565,124 @@ impl SyncService {
     }
     
     /// エラーからの復旧を試行
-    pub fn recover_from_error(&mut self) {
-        if self.current_state.is_error() {
-            self.set_state(SyncState::Idle);
+    pub async fn recover_from_error(&self) {
+        if self.current_state().await.is_error() {
+            self.set_state(SyncState::Idle).await;
         }
     }
     
+    /// プロジェクト単位の並行同期処理
+    async fn sync_project_concurrent(
+        client: &JiraClient,
+        config: &SyncConfig,
+        project_key: &str,
+        filter: &TimeBasedFilter,
+        existing_keys: &HashSet<String>
+    ) -> Result<(String, ProjectSyncStats, usize, usize, usize), (String, String)> {
+        let mut project_stats = ProjectSyncStats::new(project_key.to_string());
+        
+        // プロジェクト固有のJQLクエリを構築
+        let base_jql = format!("project = {}", project_key);
+        let time_condition = filter.to_jql_time_condition();
+        
+        let jql = if let Some(time_cond) = time_condition {
+            format!("{} AND ({})", base_jql, time_cond)
+        } else {
+            base_jql
+        };
+        
+        // 検索パラメータ設定
+        let mut search_params = SearchParams::new()
+            .max_results(1000) // 大きめのページサイズで効率化
+            .start_at(0);
+        
+        // 除外フィールドがある場合は、必要なフィールドのみを指定
+        if !config.excluded_fields.is_empty() {
+            let default_fields = vec![
+                "key".to_string(),
+                "summary".to_string(),
+                "status".to_string(),
+                "priority".to_string(),
+                "issuetype".to_string(),
+                "reporter".to_string(),
+                "created".to_string(),
+                "updated".to_string(),
+            ];
+            
+            let filtered_fields: Vec<String> = default_fields.into_iter()
+                .filter(|field| !config.excluded_fields.contains(field))
+                .collect();
+                
+            search_params = search_params.fields(filtered_fields);
+        }
+        
+        // ページネーションで全Issues取得
+        let mut start_at = 0u32;
+        let max_results = 1000u32;
+        let mut total_synced = 0;
+        let mut total_new = 0;
+        let mut total_updated = 0;
+        
+        loop {
+            search_params = search_params.start_at(start_at).max_results(max_results);
+            
+            match client.search_issues(&jql, search_params.clone()).await {
+                Ok(search_result) => {
+                    let mut new_issues = 0;
+                    let mut updated_issues = 0;
+                    
+                    for issue in &search_result.issues {
+                        if existing_keys.contains(&issue.key) {
+                            updated_issues += 1;
+                        } else {
+                            new_issues += 1;
+                        }
+                    }
+                    
+                    // 統計更新
+                    project_stats.synced_count += search_result.issues.len();
+                    project_stats.new_count += new_issues;
+                    project_stats.updated_count += updated_issues;
+                    
+                    total_synced += search_result.issues.len();
+                    total_new += new_issues;
+                    total_updated += updated_issues;
+                    
+                    // 次のページがない場合は終了
+                    if (search_result.issues.len() as u32) < max_results || 
+                       start_at + (search_result.issues.len() as u32) >= search_result.total {
+                        break;
+                    }
+                    
+                    start_at += max_results;
+                }
+                Err(e) => {
+                    let error_msg = format!("プロジェクト {} の同期エラー: {}", project_key, e);
+                    return Err((project_key.to_string(), error_msg));
+                }
+            }
+        }
+        
+        project_stats.last_sync_time = Utc::now();
+        Ok((project_key.to_string(), project_stats, total_synced, total_new, total_updated))
+    }
+
     /// 統計情報を取得
-    pub fn get_stats(&self) -> SyncServiceStats {
-        let total_syncs = self.sync_history.len();
-        let successful_syncs = self.sync_history.iter()
+    pub async fn get_stats(&self) -> SyncServiceStats {
+        let history = self.sync_history.lock().await;
+        let total_syncs = history.len();
+        let successful_syncs = history.iter()
             .filter(|r| r.is_success)
             .count();
         
-        let total_issues_synced = self.sync_history.iter()
+        let total_issues_synced = history.iter()
             .map(|r| r.synced_issues_count)
             .sum();
             
-        let average_duration = if !self.sync_history.is_empty() {
-            self.sync_history.iter()
+        let average_duration = if !history.is_empty() {
+            history.iter()
                 .map(|r| r.duration_seconds())
-                .sum::<f64>() / self.sync_history.len() as f64
+                .sum::<f64>() / history.len() as f64
         } else {
             0.0
         };
@@ -524,8 +692,8 @@ impl SyncService {
             successful_syncs,
             total_issues_synced,
             average_duration_seconds: average_duration,
-            last_sync_time: self.sync_history.last().map(|r| r.end_time),
-            last_successful_sync_time: self.last_successful_sync,
+            last_sync_time: history.last().map(|r| r.end_time),
+            last_successful_sync_time: self.last_successful_sync().await,
         }
     }
 }
@@ -667,43 +835,43 @@ mod tests {
         assert_eq!(stats.error_count, 0);
     }
     
-    #[test]
-    fn test_sync_service_new() {
+    #[tokio::test]
+    async fn test_sync_service_new() {
         // SyncService::new()で初期状態が正しく設定されることをテスト
         let config = SyncConfig::new();
         let service = SyncService::new(config);
         
-        assert!(service.current_state().is_idle());
-        assert!(service.sync_history().is_empty());
-        assert!(service.last_successful_sync().is_none());
-        assert!(service.can_sync());
+        assert!(service.current_state().await.is_idle());
+        assert!(service.sync_history().await.is_empty());
+        assert!(service.last_successful_sync().await.is_none());
+        assert!(service.can_sync().await);
     }
     
-    #[test]
-    fn test_sync_service_state_management() {
+    #[tokio::test]
+    async fn test_sync_service_state_management() {
         // SyncServiceの状態管理が正しく動作することをテスト
         let config = SyncConfig::new();
-        let mut service = SyncService::new(config);
+        let service = SyncService::new(config);
         
         // 初期状態
-        assert!(service.can_sync());
+        assert!(service.can_sync().await);
         
         // 同期開始
-        service.set_state(SyncState::Syncing);
-        assert!(service.current_state().is_syncing());
-        assert!(!service.can_sync());
+        service.set_state(SyncState::Syncing).await;
+        assert!(service.current_state().await.is_syncing());
+        assert!(!service.can_sync().await);
         
         // 同期完了
-        service.set_state(SyncState::Completed);
-        assert!(service.current_state().is_completed());
-        assert!(service.can_sync());
+        service.set_state(SyncState::Completed).await;
+        assert!(service.current_state().await.is_completed());
+        assert!(service.can_sync().await);
     }
     
-    #[test]
-    fn test_sync_service_history_management() {
+    #[tokio::test]
+    async fn test_sync_service_history_management() {
         // SyncServiceの履歴管理が正しく動作することをテスト
         let config = SyncConfig::new().max_history_count(2);
-        let mut service = SyncService::new(config);
+        let service = SyncService::new(config);
         
         // 履歴追加
         let mut result1 = SyncResult::new();
@@ -719,25 +887,26 @@ mod tests {
         result3.synced_issues_count = 30;
         result3.finish(); // エラーなしで完了
         
-        service.add_sync_result(result1);
-        assert_eq!(service.sync_history().len(), 1);
-        assert!(service.last_successful_sync().is_some());
+        service.add_sync_result(result1).await;
+        assert_eq!(service.sync_history().await.len(), 1);
+        assert!(service.last_successful_sync().await.is_some());
         
-        service.add_sync_result(result2);
-        assert_eq!(service.sync_history().len(), 2);
+        service.add_sync_result(result2).await;
+        assert_eq!(service.sync_history().await.len(), 2);
         
         // 最大履歴数を超えると古いものが削除される
-        service.add_sync_result(result3);
-        assert_eq!(service.sync_history().len(), 2);
-        assert_eq!(service.sync_history()[0].synced_issues_count, 20); // 最初の履歴が削除された
-        assert_eq!(service.sync_history()[1].synced_issues_count, 30);
+        service.add_sync_result(result3).await;
+        let history = service.sync_history().await;
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].synced_issues_count, 20); // 最初の履歴が削除された
+        assert_eq!(history[1].synced_issues_count, 30);
     }
     
-    #[test]
-    fn test_sync_service_stats() {
+    #[tokio::test]
+    async fn test_sync_service_stats() {
         // SyncServiceの統計情報が正しく計算されることをテスト
         let config = SyncConfig::new();
-        let mut service = SyncService::new(config);
+        let service = SyncService::new(config);
         
         // 成功した同期を追加
         let mut success_result = SyncResult::new();
@@ -750,10 +919,10 @@ mod tests {
         failure_result.add_error("Test error".to_string());
         failure_result.finish();
         
-        service.add_sync_result(success_result);
-        service.add_sync_result(failure_result);
+        service.add_sync_result(success_result).await;
+        service.add_sync_result(failure_result).await;
         
-        let stats = service.get_stats();
+        let stats = service.get_stats().await;
         assert_eq!(stats.total_syncs, 2);
         assert_eq!(stats.successful_syncs, 1);
         assert_eq!(stats.total_issues_synced, 150);
@@ -775,46 +944,46 @@ mod tests {
         assert!((duration - 1.0).abs() < 0.1); // 約1秒
     }
     
-    #[test]
-    fn test_sync_service_should_sync() {
+    #[tokio::test]
+    async fn test_sync_service_should_sync() {
         // SyncService::should_sync()が正しく動作することをテスト
         let config = SyncConfig::new().interval_minutes(60);
-        let mut service = SyncService::new(config);
+        let service = SyncService::new(config);
         
         // 初回同期の場合は常にtrue
-        assert!(service.should_sync());
+        assert!(service.should_sync().await);
         
         // 同期中の場合はfalse
-        service.set_state(SyncState::Syncing);
-        assert!(!service.should_sync());
+        service.set_state(SyncState::Syncing).await;
+        assert!(!service.should_sync().await);
         
         // 最後の同期から十分時間が経過している場合はtrue
-        service.set_state(SyncState::Idle);
-        service.last_successful_sync = Some(Utc::now() - chrono::Duration::hours(2));
-        assert!(service.should_sync());
+        service.set_state(SyncState::Idle).await;
+        *service.last_successful_sync.lock().await = Some(Utc::now() - chrono::Duration::hours(2));
+        assert!(service.should_sync().await);
         
         // 最近同期した場合はfalse
-        service.last_successful_sync = Some(Utc::now() - chrono::Duration::minutes(30));
-        assert!(!service.should_sync());
+        *service.last_successful_sync.lock().await = Some(Utc::now() - chrono::Duration::minutes(30));
+        assert!(!service.should_sync().await);
     }
     
-    #[test]
-    fn test_sync_service_recover_from_error() {
+    #[tokio::test]
+    async fn test_sync_service_recover_from_error() {
         // SyncService::recover_from_error()が正しく動作することをテスト
         let config = SyncConfig::new();
-        let mut service = SyncService::new(config);
+        let service = SyncService::new(config);
         
         // エラー状態に設定
-        service.set_state(SyncState::Error("Test error".to_string()));
-        assert!(service.current_state().is_error());
+        service.set_state(SyncState::Error("Test error".to_string())).await;
+        assert!(service.current_state().await.is_error());
         
         // エラーからの復旧
-        service.recover_from_error();
-        assert!(service.current_state().is_idle());
+        service.recover_from_error().await;
+        assert!(service.current_state().await.is_idle());
         
         // アイドル状態では何もしない
-        service.recover_from_error();
-        assert!(service.current_state().is_idle());
+        service.recover_from_error().await;
+        assert!(service.current_state().await.is_idle());
     }
     
     #[test]

@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_time_optimization(true)
         .concurrent_sync_count(2);
         
-    let mut sync_service = SyncService::new(sync_config);
+    let sync_service = SyncService::new(sync_config);
     
     println!("    設定:");
     println!("    - 同期間隔: {} 分", sync_service.config().interval_minutes);
@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. 初回同期実行
     println!("\n[2] 初回同期実行");
     
-    if sync_service.should_sync() {
+    if sync_service.should_sync().await {
         println!("    同期を開始中...");
         
         match sync_service.sync_full(&client).await {
@@ -119,11 +119,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5. 同期状態管理のデモ
     println!("\n[5] 同期状態管理");
     
-    println!("    現在の状態: {:?}", sync_service.current_state());
-    println!("    同期可能: {}", sync_service.can_sync());
-    println!("    同期必要: {}", sync_service.should_sync());
+    println!("    現在の状態: {:?}", sync_service.current_state().await);
+    println!("    同期可能: {}", sync_service.can_sync().await);
+    println!("    同期必要: {}", sync_service.should_sync().await);
     
-    if let Some(last_sync) = sync_service.last_successful_sync() {
+    if let Some(last_sync) = sync_service.last_successful_sync().await {
         let elapsed = Utc::now() - last_sync;
         println!("    最後の成功同期: {} 分前", elapsed.num_minutes());
     } else {
@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 6. 同期統計の表示
     println!("\n[6] 同期統計");
     
-    let stats = sync_service.get_stats();
+    let stats = sync_service.get_stats().await;
     println!("    総同期回数: {} 回", stats.total_syncs);
     println!("    成功同期回数: {} 回", stats.successful_syncs);
     println!("    成功率: {:.1}%", 
@@ -149,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 7. 履歴表示
     println!("\n[7] 同期履歴");
     
-    let history = sync_service.sync_history();
+    let history = sync_service.sync_history().await;
     if history.is_empty() {
         println!("    履歴なし");
     } else {
@@ -217,9 +217,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n[9] エラーハンドリング");
     
     // エラー状態をシミュレート
-    if sync_service.current_state().is_error() {
+    if sync_service.current_state().await.is_error() {
         println!("    エラー状態から復旧中...");
-        sync_service.recover_from_error();
+        sync_service.recover_from_error().await;
         println!("    [OK] エラーから復旧しました");
     } else {
         println!("    現在エラー状態ではありません");
@@ -389,9 +389,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ]) // 重いフィールドを除外して軽量化
         .target_projects(vec![]); // 全プロジェクト対象（制限なし）
         
-    let mut test_sync = SyncService::new(test_config);
+    let test_sync = SyncService::new(test_config);
     
-    if test_sync.should_sync() {
+    if test_sync.should_sync().await {
         println!("    軽量同期を実行中...");
         match test_sync.sync_full(&client).await {
             Ok(result) => {
